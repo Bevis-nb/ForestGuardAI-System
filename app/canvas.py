@@ -348,9 +348,15 @@ class TerrainMap(QWidget):
         pen.setDashPattern([4, 4])
         p.setPen(pen)
         p.drawPath(iso)
+        p.setFont(_font(9, 700))
+        tw = p.fontMetrics().horizontalAdvance("建议隔离带") + 16
+        box = QRectF(r.left() + r.width() * 0.705, r.top() + r.height() * 0.815, tw, 19)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 230))
+        p.drawRoundedRect(box, 9, 9)
         p.setPen(C(theme.AMBER))
-        p.setFont(_font(9.5, 700))
-        p.drawText(QPointF(r.left() + r.width() * 0.745, r.top() + r.height() * 0.52), "建议隔离带")
+        p.drawText(box, Qt.AlignmentFlag.AlignCenter, "建议隔离带")
+        p.setPen(Qt.PenStyle.NoPen)
 
     def _paint_fire(self, p: QPainter, r: QRectF):
         center = self.pt(self.engine.fire_origin)
@@ -836,9 +842,13 @@ class LinkDiagram(QWidget):
         p.drawEllipse(uav, 27, 27)
         p.drawPixmap(QPointF(uav.x() - 13, uav.y() - 13), icons.pixmap("drone", theme.BLUE, 26))
         p.setFont(_font(9, 700))
+        tw = p.fontMetrics().horizontalAdvance("UAV 侦察定位 · 火源坐标回传") + 18
+        box = QRectF(uav.x() - tw / 2, uav.y() + 30, tw, 18)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 225))
+        p.drawRoundedRect(box, 9, 9)
         p.setPen(C(theme.TEXT_SOFT))
-        p.drawText(QRectF(uav.x() - 90, uav.y() + 31, 180, 14),
-                   Qt.AlignmentFlag.AlignCenter, "UAV 侦察定位 · 火源坐标回传")
+        p.drawText(box, Qt.AlignmentFlag.AlignCenter, "UAV 侦察定位 · 火源坐标回传")
 
         # UGV 节点
         names = ["UGV-01", "UGV-02", "UGV-03"]
