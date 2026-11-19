@@ -17,6 +17,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from app import config, theme
 from app.theme import apply_theme
 from app.main_window import MainWindow
 
@@ -29,6 +30,12 @@ def main() -> int:
 
     # Fusion 风格可保证 QSS 在各平台表现一致
     app.setStyle("Fusion")
+
+    # 读取用户偏好（主题色 / 信息密度 / 动效）
+    cfg = config.load()
+    theme.set_accent(cfg.get("accent", "森林绿"))
+    theme.set_density(bool(cfg.get("compact")))
+    theme.ANIMATIONS = bool(cfg.get("animations", True))
     apply_theme(app)
 
     window = MainWindow()

@@ -21,13 +21,13 @@ class Page(QWidget):
     """标准内容页：标题区 + 内容区。"""
 
     def __init__(self, engine, title: str, subtitle: str = "", parent=None,
-                 padding: tuple[int, int, int, int] = (22, 18, 22, 18)):
+                 padding: tuple[int, int, int, int] = (18, 14, 18, 14)):
         super().__init__(parent)
         self.engine = engine
         self.setObjectName("Page")
         root = QVBoxLayout(self)
-        root.setContentsMargins(*padding)
-        root.setSpacing(14)
+        root.setContentsMargins(*[theme.d(v) for v in padding])
+        root.setSpacing(theme.d(14, 6))
 
         header = QHBoxLayout()
         header.setSpacing(10)
@@ -55,7 +55,7 @@ class ScrollPage(Page):
     """可滚动内容页（内容高度较大时使用）。"""
 
     def __init__(self, engine, title: str, subtitle: str = "", parent=None,
-                 padding: tuple[int, int, int, int] = (22, 18, 12, 16)):
+                 padding: tuple[int, int, int, int] = (18, 14, 10, 12)):
         super().__init__(engine, title, subtitle, parent, padding)
         area = QScrollArea()
         area.setWidgetResizable(True)

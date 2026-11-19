@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QSlider, QVBoxLayout, QWidget
 
 from .. import icons, theme
-from ..canvas import CameraView, TerrainMap
+from ..canvas import TerrainMap, VideoFeed
 from ..simulation import SimEngine
 from ..widgets import (
     KeyValueRow,
@@ -38,7 +38,7 @@ class AnalysisPage(ScrollPage):
         vision = Panel("AI 火情识别", "YOLO-Fire v3 · 明火 / 烟雾 / 正常环境", "camera")
         self.vision_pill = Pill("推理中", "success")
         vision.add_action(self.vision_pill)
-        self.cam = CameraView(engine)
+        self.cam = VideoFeed(engine)
         self.cam.setMinimumHeight(210)
         vision.add(self.cam, 1)
 

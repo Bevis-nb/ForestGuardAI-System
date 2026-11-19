@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import icons, theme
+from . import config, icons, theme
 from .pages.analysis import AnalysisPage
 from .pages.collaboration import CollaborationPage
 from .pages.fleet import FleetPage
@@ -52,7 +52,7 @@ class NavButton(QPushButton):
         self.setProperty("variant", "nav")
         self.setProperty("active", "false")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(40)
+        self.setMinimumHeight(38)
         self.setIcon(icons.icon(icon_name, theme.MUTED, 18))
         self.setIconSize(QSize(18, 18))
         self._icon_name = icon_name
@@ -78,6 +78,7 @@ class TitleBar(QFrame):
         lay.setSpacing(10)
 
         mark = QLabel()
+        self.mark = mark
         mark.setFixedSize(32, 32)
         mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
         mark.setPixmap(icons.pixmap("leaf", "#FFFFFF", 18))
@@ -176,13 +177,28 @@ class TitleBar(QFrame):
     def mouseDoubleClickEvent(self, event):
         self.window_ref.toggle_max()
 
+    def refresh_theme(self):
+        engine = self.window_ref.engine
+        self.setStyleSheet(
+            f"#TitleBar {{ background:{theme.SURFACE}; border-bottom:1px solid {theme.BORDER};"
+            f" border-top-left-radius:14px; border-top-right-radius:14px; }}"
+        )
+        self.mark.setStyleSheet(
+            f"background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {theme.ACCENT_LIGHT},"
+            f" stop:1 {theme.ACCENT_DARK}); border-radius:10px;"
+        )
+        self.chip_link.set_kind("success")
+        level, kind = engine.risk_level()
+        self.chip_risk.set_kind(kind)
+        self.chip_risk.set_text(f"火险 {engine.risk:.0f} · {level}")
+
 
 class Sidebar(QFrame):
     def __init__(self, window: "MainWindow", engine: SimEngine, parent=None):
         super().__init__(parent)
         self.window_ref = window
         self.setObjectName("Sidebar")
-        self.setFixedWidth(212)
+        self.setFixedWidth(204)
         self.setStyleSheet(
             f"#Sidebar {{ background:{theme.SURFACE}; border-right:1px solid {theme.BORDER};"
             f" border-bottom-left-radius:14px; }}"
@@ -221,6 +237,7 @@ class Sidebar(QFrame):
         head.addWidget(label("AI 推理引擎", None, size=11.5, weight=700))
         head.addStretch(1)
         dot = label("●", None, color=theme.ACCENT, size=9)
+        self.dot = dot
         head.addWidget(dot)
         ec.addLayout(head)
         ec.addWidget(label("YOLO-Fire v3 · 38 ms", "caption"))
@@ -247,8 +264,17 @@ class Sidebar(QFrame):
         lay.addWidget(self.user_row)
 
     def set_active(self, key: str):
+        self._active_key = key
         for k, btn in self.buttons.items():
             btn.set_active(k == key)
+
+    def refresh_theme(self):
+        self.setStyleSheet(
+            f"#Sidebar {{ background:{theme.SURFACE}; border-right:1px solid {theme.BORDER};"
+            f" border-bottom-left-radius:14px; }}"
+        )
+        self.dot.setStyleSheet(f"color:{theme.ACCENT}; font-size:12px;")
+        self.set_active(getattr(self, "_active_key", "overview"))
 
     def set_user(self, user: str):
         self.name_label.setText(user)
@@ -284,6 +310,17 @@ class Dashboard(QWidget):
         lay.addLayout(body, 1)
 
         self.pages: dict[str, QWidget] = {}
+        self._build_pages()
+
+        self._clock = QTimer(self)
+        self._clock.setInterval(1000)
+        self._clock.timeout.connect(self._tick_clock)
+        self._clock.start()
+        self._tick_clock()
+        engine.tick.connect(self._tick_status)
+
+    def _build_pages(self):
+        engine = self.engine
         for key, page_cls in (
             ("overview", OverviewPage),
             ("map", MapPage),
@@ -296,21 +333,42 @@ class Dashboard(QWidget):
             page = page_cls(engine)
             self.pages[key] = page
             self.stack.addWidget(page)
-        self.settings = SettingsPage(engine)
+        self.settings = SettingsPage(engine, getattr(self.window_ref, "user", "admin"))
         self.settings.logout_requested.connect(self.window_ref.logout)
         self.pages["settings"] = self.settings
         self.stack.addWidget(self.settings)
 
-        self._clock = QTimer(self)
-        self._clock.setInterval(1000)
-        self._clock.timeout.connect(self._tick_clock)
-        self._clock.start()
-        self._tick_clock()
-        engine.tick.connect(self._tick_status)
+    def rebuild(self):
+        """主题 / 密度变化后重建页面（图标与配色会重新生成）。"""
+        current = self.window_ref.current_page
+        for page in list(self.pages.values()):
+            self.stack.removeWidget(page)
+            page.setParent(None)
+            page.deleteLater()
+        self.pages.clear()
+        self._build_pages()
+        self.show_page(current if current in self.pages else "overview")
+        self.sidebar.refresh_theme()
+        self.titlebar.refresh_theme()
+        self._tick_status()
 
     def set_user(self, user: str):
         self.titlebar.set_user(user)
         self.sidebar.set_user(user)
+
+    def refresh_theme(self):
+        self.setStyleSheet(
+            f"#TitleBar {{ background:{theme.SURFACE}; border-bottom:1px solid {theme.BORDER};"
+            f" border-top-left-radius:14px; border-top-right-radius:14px; }}"
+        )
+        self.mark.setStyleSheet(
+            f"background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {theme.ACCENT_LIGHT},"
+            f" stop:1 {theme.ACCENT_DARK}); border-radius:10px;"
+        )
+        self.chip_link.set_kind("success")
+        level, kind = self.engine.risk_level()
+        self.chip_risk.set_kind(kind)
+        self.chip_risk.set_text(f"火险 {self.engine.risk:.0f} · {level}")
 
     def show_page(self, key: str):
         page = self.pages.get(key)
@@ -342,10 +400,20 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon("logo.ico"))
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.resize(1440, 900)
-        self.setMinimumSize(1240, 780)
+        screen = QApplication.primaryScreen()
+        geo = screen.availableGeometry() if screen else None
+        want_w = min(1440, int(geo.width() * 0.94)) if geo else 1440
+        want_h = min(900, int(geo.height() * 0.92)) if geo else 900
+        self.resize(max(want_w, 1100), max(want_h, 720))
+        self.setMinimumSize(min(1120, want_w), min(700, want_h))
 
+        self._cfg = config.load()
         self.engine = SimEngine()
+        self.engine.th_temp = float(self._cfg.get("th_temp", 65))
+        self.engine.th_smoke = float(self._cfg.get("th_smoke", 180))
+        self.engine.th_risk = float(self._cfg.get("th_risk", 80))
+        self.engine.silent = bool(self._cfg.get("silent", False))
+        self.engine.timer.setInterval(int(self._cfg.get("refresh", 1)) * 1000)
 
         root = QWidget()
         root.setObjectName("Root")
@@ -369,6 +437,8 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         shell_lay.addWidget(self.stack)
 
+        self.user = "admin"
+        self.current_page = "overview"
         self.login = LoginPage()
         self.login.logged_in.connect(self.on_login)
         self.stack.addWidget(self.login)
@@ -376,12 +446,25 @@ class MainWindow(QMainWindow):
         self.dashboard = Dashboard(self, self.engine)
         self.stack.addWidget(self.dashboard)
 
-        self.current_page = "overview"
-        self.user = "admin"
         self._maximized = False
         self.center_on_screen()
 
     # ------------------------------------------------------------------
+    def apply_preferences(self):
+        """应用系统设置中的外观 / 动效 / 阈值，并重建页面。"""
+        cfg = config.load()
+        self._cfg = cfg
+        theme.set_accent(cfg.get("accent", "森林绿"))
+        theme.set_density(bool(cfg.get("compact")))
+        theme.ANIMATIONS = bool(cfg.get("animations", True))
+        theme.apply_theme(QApplication.instance())
+        self.engine.th_temp = float(cfg.get("th_temp", 65))
+        self.engine.th_smoke = float(cfg.get("th_smoke", 180))
+        self.engine.th_risk = float(cfg.get("th_risk", 80))
+        self.engine.silent = bool(cfg.get("silent", False))
+        self.engine.timer.setInterval(int(cfg.get("refresh", 1)) * 1000)
+        QTimer.singleShot(0, self.dashboard.rebuild)
+
     def center_on_screen(self):
         screen = QApplication.primaryScreen()
         if screen:

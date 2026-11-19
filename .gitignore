@@ -10,3 +10,4 @@ env/
 build/
 dist/
 *.log
+utils/app_config.json

@@ -156,13 +156,14 @@ class Divider(QFrame):
 
 
 class Card(QFrame):
-    def __init__(self, parent=None, padding: int = 18, spacing: int = 12,
+    def __init__(self, parent=None, padding: int = 16, spacing: int = 10,
                  alt: bool = False, object_name: str | None = None):
         super().__init__(parent)
         self.setObjectName(object_name or ("CardAlt" if alt else "Card"))
+        pad = theme.d(padding, 8)
         self.body = QVBoxLayout(self)
-        self.body.setContentsMargins(padding, padding, padding, padding)
-        self.body.setSpacing(spacing)
+        self.body.setContentsMargins(pad, pad, pad, pad)
+        self.body.setSpacing(theme.d(spacing, 4))
 
     def add(self, widget: QWidget, stretch: int = 0):
         self.body.addWidget(widget, stretch)

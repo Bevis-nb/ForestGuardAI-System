@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
 
 from .. import icons, theme
-from ..canvas import CameraView, TerrainMap
+from ..canvas import VideoFeed, TerrainMap
 from ..simulation import SimEngine
 from ..widgets import (
     Card,
@@ -42,8 +42,8 @@ class OverviewPage(ScrollPage):
 
         self._refresh_alerts()
         engine.tick.connect(self._refresh)
-        engine.event_added.connect(lambda ev: self.events.set_events(engine.events))
-        engine.alert_added.connect(lambda ev: self._refresh_alerts())
+        engine.event_added.connect(self._on_event_added)
+        engine.alert_added.connect(self._on_alert_added)
         self._refresh()
 
     # ------------------------------------------------------------------
@@ -126,7 +126,7 @@ class OverviewPage(ScrollPage):
         detect.add_action(Pill("在线推理", "success"))
         body = QHBoxLayout()
         body.setSpacing(12)
-        self.cam = CameraView(self.engine)
+        self.cam = VideoFeed(self.engine)
         self.cam.setMinimumWidth(250)
         self.cam.setMinimumHeight(112)
         body.addWidget(self.cam, 1)
@@ -163,6 +163,12 @@ class OverviewPage(ScrollPage):
         self.root.addLayout(row)
 
     # ------------------------------------------------------------------
+    def _on_event_added(self, _ev=None):
+        self.events.set_events(self.engine.events)
+
+    def _on_alert_added(self, _ev=None):
+        self._refresh_alerts()
+
     def _refresh_alerts(self):
         while self.alert_list.count():
             item = self.alert_list.takeAt(0)

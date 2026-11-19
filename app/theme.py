@@ -24,6 +24,39 @@ ACCENT_LIGHT = "#43C68C"
 ACCENT_SOFT = "#E6F6EE"
 ACCENT_SOFT_2 = "#D5F0E2"
 
+# 可切换的主题色（名称 -> 主色 / 深 / 浅 / 浅底 / 浅底2）
+ACCENT_NAME = "森林绿"
+PALETTES: dict[str, tuple[str, str, str, str, str]] = {
+    "森林绿": ("#12A66A", "#0B8455", "#43C68C", "#E6F6EE", "#D5F0E2"),
+    "天空蓝": ("#2F7DF6", "#1E5FCB", "#5B9BFF", "#E8F1FE", "#D6E6FE"),
+    "琥珀橙": ("#EE9A2E", "#C1751A", "#F7B85C", "#FEF3E2", "#FBE6C6"),
+    "薰衣草": ("#7C6BF2", "#5E4FD0", "#9C8FF7", "#EFECFE", "#E2DCFD"),
+}
+
+DENSITY = 1.0          # 1.0 标准 / 0.86 紧凑
+ANIMATIONS = True      # 界面动效开关
+
+
+def set_accent(name: str) -> str:
+    """切换主色，并同步派生色与语义色。"""
+    global ACCENT, ACCENT_DARK, ACCENT_LIGHT, ACCENT_SOFT, ACCENT_SOFT_2, ACCENT_NAME
+    if name not in PALETTES:
+        name = "森林绿"
+    ACCENT, ACCENT_DARK, ACCENT_LIGHT, ACCENT_SOFT, ACCENT_SOFT_2 = PALETTES[name]
+    ACCENT_NAME = name
+    SEVERITY["success"] = (ACCENT, ACCENT_SOFT)
+    return ACCENT
+
+
+def set_density(compact: bool) -> None:
+    global DENSITY
+    DENSITY = 0.86 if compact else 1.0
+
+
+def d(value: float, minimum: float = 0) -> int:
+    """按当前信息密度缩放尺寸。"""
+    return max(int(round(value * DENSITY)), int(minimum))
+
 BLUE = "#2F7DF6"
 BLUE_SOFT = "#E8F1FE"
 AMBER = "#F2A93B"

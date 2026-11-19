@@ -286,6 +286,12 @@ class SimEngine(QObject):
         self.wind_speed = 4.6
         self.humidity = 31.0
         self.temperature = 28.4
+        # 告警阈值（可在系统设置中调整）
+        self.th_temp = 65.0
+        self.th_smoke = 180.0
+        self.th_risk = 80.0
+        self.silent = False
+        self._th_state: dict[str, bool] = {}
         self.slope = 0.34
         self.risk = 82.0
         self.fire_area = 12.8
@@ -418,7 +424,25 @@ class SimEngine(QObject):
         for t in self.tasks:
             if t["status"] == "执行中":
                 t["progress"] = min(100, t["progress"] + self.rng.randint(0, 2))
+        self._check_thresholds()
         self.tick.emit()
+
+    def _check_thresholds(self) -> None:
+        """阈值越限（上升沿）时推送告警，避免重复刷屏。"""
+        checks = (
+            ("temp", self.temperature >= self.th_temp,
+             "地表温度超阈值", f"实测 {self.temperature:.1f} ℃ · 阈值 {self.th_temp:.0f} ℃", "warning"),
+            ("risk", self.risk >= self.th_risk,
+             "火险指数超阈值", f"当前 {self.risk:.0f} · 阈值 {self.th_risk:.0f}", "critical"),
+        )
+        for key, hit, title, detail, level in checks:
+            prev = self._th_state.get(key, hit)
+            self._th_state[key] = hit
+            if not hit or prev:
+                continue
+            if self.silent and level != "critical":
+                continue
+            self.push_alert(title, detail, level, "阈值监测")
 
     def _advance_robot(self, r: Robot):
         if r.status not in ("on_mission", "returning"):

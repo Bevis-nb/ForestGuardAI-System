@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import random
 from typing import Sequence
 
@@ -596,7 +597,7 @@ class CameraView(QWidget):
         self._timer.start()
 
     def _tick(self):
-        if self.isVisible():
+        if theme.ANIMATIONS and self.isVisible():
             self.phase += 0.08
             self.update()
 
@@ -802,7 +803,7 @@ class LinkDiagram(QWidget):
         self._timer.start()
 
     def _tick(self):
-        if self.isVisible():
+        if theme.ANIMATIONS and self.isVisible():
             self.phase += 0.05
             self.update()
 
@@ -892,7 +893,7 @@ class FormationView(QWidget):
         self._timer.start()
 
     def _tick(self):
-        if self.isVisible():
+        if theme.ANIMATIONS and self.isVisible():
             self.phase += 0.035
             self.update()
 
@@ -989,7 +990,7 @@ class Waveform(QWidget):
         self._timer.start()
 
     def _tick(self):
-        if self.active and self.isVisible():
+        if theme.ANIMATIONS and self.active and self.isVisible():
             self.phase += 0.28
             self.update()
 
@@ -1017,3 +1018,252 @@ class Waveform(QWidget):
             bw = max(2.5, w / bars - 2.5)
             p.drawRoundedRect(QRectF(x, (h - bh) / 2, bw, bh), bw / 2, bw / 2)
         p.end()
+
+
+_ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+_feed_cache: dict[str, QPixmap] = {}
+
+
+def feed_pixmap(mode: str = "eo") -> QPixmap:
+    """加载实拍无人机画面（EO / 红外），带缓存。"""
+    key = "feed_ir" if mode == "ir" else "feed_eo"
+    if key not in _feed_cache:
+        pm = QPixmap(os.path.join(_ASSET_DIR, f"{key}.jpg"))
+        _feed_cache[key] = pm
+    return _feed_cache[key]
+
+
+class VideoFeed(QWidget):
+    """无人机实时视频画面：真实航拍底图 + 遥测 OSD + 目标框。"""
+
+    def __init__(self, engine: SimEngine | None = None, mode: str = "eo",
+                 connected: bool = True, parent=None, show_boxes: bool = True):
+        super().__init__(parent)
+        self.engine = engine
+        self.mode = mode
+        self.connected = connected
+        self.show_boxes = show_boxes
+        self.phase = 0.0
+        self.rec_seconds = 12 * 60 + 34
+        self.setMinimumSize(320, 180)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._timer = QTimer(self)
+        self._timer.setInterval(80)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+    # ------------------------------------------------------------------
+    def _tick(self):
+        if not self.isVisible() or not theme.ANIMATIONS:
+            return
+        self.phase += 0.06
+        self.rec_seconds += 0.08
+        self.update()
+
+    def set_mode(self, mode: str):
+        self.mode = mode
+        self.update()
+
+    def set_connected(self, connected: bool):
+        self.connected = connected
+        self.update()
+
+    def set_thermal(self, on: bool):
+        self.set_mode("ir" if on else "eo")
+
+    def set_boxes(self, show: bool):
+        self.show_boxes = show
+        self.update()
+
+    # ------------------------------------------------------------------
+    def _cover_source(self, target_ratio: float) -> QRectF:
+        pm = feed_pixmap(self.mode)
+        if pm.isNull():
+            return QRectF()
+        sw, sh = pm.width(), pm.height()
+        # 轻微摇镜 + 1.06 倍数字变焦
+        zoom = 1.06
+        cw, ch = sw / zoom, sh / zoom
+        ratio = sw / sh
+        if target_ratio > ratio:
+            ch = cw / target_ratio
+        else:
+            cw = ch * target_ratio
+        cx = sw / 2 + math.sin(self.phase * 0.21) * sw * 0.012
+        cy = sh / 2 + math.cos(self.phase * 0.17) * sh * 0.010
+        x = min(max(cx - cw / 2, 0), sw - cw)
+        y = min(max(cy - ch / 2, 0), sh - ch)
+        return QRectF(x, y, cw, ch)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        r = QRectF(self.rect())
+        p.save()
+        clip = QPainterPath()
+        clip.addRoundedRect(r, 12, 12)
+        p.setClipPath(clip)
+        p.fillRect(r, QColor("#05080A"))
+
+        if not self.connected:
+            self._paint_offline(p, r)
+            p.restore()
+            p.end()
+            return
+
+        pm = feed_pixmap(self.mode)
+        src = self._cover_source(r.width() / max(1, r.height()))
+        p.drawPixmap(r, pm, src)
+
+        # 动态噪点 + 扫描线 + 暗角
+        rng = random.Random(int(self.phase * 7) % 97)
+        p.setPen(Qt.PenStyle.NoPen)
+        for _ in range(70):
+            x = r.left() + rng.random() * r.width()
+            y = r.top() + rng.random() * r.height()
+            a = rng.randint(8, 26)
+            p.setBrush(QColor(255, 255, 255, a) if rng.random() > 0.5 else QColor(0, 0, 0, a))
+            p.drawRect(QRectF(x, y, 1.4, 1.4))
+        p.setPen(QPen(QColor(0, 0, 0, 26), 1))
+        y = r.top()
+        while y < r.bottom():
+            p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
+            y += 3
+        vignette = QRadialGradient(r.center(), r.width() * 0.72)
+        vignette.setColorAt(0.55, QColor(0, 0, 0, 0))
+        vignette.setColorAt(1, QColor(0, 0, 0, 120))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(vignette)
+        p.drawRect(r)
+
+        self._paint_hud(p, r)
+        p.restore()
+        p.end()
+
+    # ------------------------------------------------------------------
+    def _paint_offline(self, p: QPainter, r: QRectF):
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#0B1014"))
+        p.drawRect(r)
+        p.setFont(_font(11, 600))
+        msg = "视频信号中断 · 等待重连"
+        tw = p.fontMetrics().horizontalAdvance(msg) + 34
+        box = QRectF(r.center().x() - tw / 2, r.center().y() - 14, tw, 28)
+        p.setBrush(QColor(229, 72, 77, 40))
+        p.setPen(QPen(QColor(229, 72, 77, 120), 1))
+        p.drawRoundedRect(box, 14, 14)
+        p.setPen(QColor("#F09A9C"))
+        p.drawText(box, Qt.AlignmentFlag.AlignCenter, msg)
+
+    def _paint_hud(self, p: QPainter, r: QRectF):
+        w, h = r.width(), r.height()
+        pad = 12
+        compact = w < 420 or h < 260
+
+        # 取景角标
+        p.setPen(QPen(QColor(255, 255, 255, 150), 1.4))
+        arm = 16
+        for cx, cy, dx, dy in ((pad, pad, 1, 1), (w - pad, pad, -1, 1),
+                               (pad, h - pad, 1, -1), (w - pad, h - pad, -1, -1)):
+            p.drawLine(QPointF(cx, cy), QPointF(cx + arm * dx, cy))
+            p.drawLine(QPointF(cx, cy), QPointF(cx, cy + arm * dy))
+
+        # 中心准星
+        cx, cy = w / 2, h / 2
+        p.setPen(QPen(QColor(255, 255, 255, 120), 1))
+        p.drawLine(QPointF(cx - 14, cy), QPointF(cx - 4, cy))
+        p.drawLine(QPointF(cx + 4, cy), QPointF(cx + 14, cy))
+        p.drawLine(QPointF(cx, cy - 14), QPointF(cx, cy - 4))
+        p.drawLine(QPointF(cx, cy + 4), QPointF(cx, cy + 14))
+
+        # 左上：录制状态
+        p.setFont(_font(9.5, 700))
+        rec = "REC" if int(self.phase) % 2 == 0 else "REC"
+        p.setPen(QColor("#FF5A5F"))
+        p.drawText(QRectF(32, 16, 30, 14), Qt.AlignmentFlag.AlignVCenter, rec)
+        p.setBrush(QColor("#FF5A5F"))
+        p.setPen(Qt.PenStyle.NoPen)
+        if int(self.phase * 1.5) % 2 == 0:
+            p.drawEllipse(QPointF(68, 23), 3.2, 3.2)
+        mm, ss = int(self.rec_seconds // 60), int(self.rec_seconds % 60)
+        p.setPen(QColor(255, 255, 255, 210))
+        p.setFont(_font(9, 600))
+        p.drawText(QRectF(76, 16, 90, 14), Qt.AlignmentFlag.AlignVCenter,
+                   f"00:{mm:02d}:{ss:02d}")
+        if not compact:
+            p.setPen(QColor(255, 255, 255, 190))
+            p.drawText(QRectF(32, 32, 170, 14), Qt.AlignmentFlag.AlignVCenter,
+                       f"UAV-03  ·  {'IR 640×512' if self.mode == 'ir' else 'EO 1080P'}")
+
+        # 右上：信号强度
+        bx, by = w - 26, 18
+        if compact:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255, 200))
+            for i in range(4):
+                hh = 3 + i * 2
+                p.drawRoundedRect(
+                    QRectF(bx - 18 + i * 5, by + (8.5 - hh), 3, hh), 1, 1)
+            bx = -999
+        p.setPen(Qt.PenStyle.NoPen)
+        for i in range(4):
+            hh = 3 + i * 2.4
+            p.setBrush(QColor(255, 255, 255, 220 if i < 3 else 90))
+            p.drawRoundedRect(QRectF(bx - 26 + i * 5, by + (9 - hh), 3, hh), 1, 1)
+        if not compact:
+            p.setPen(QColor(255, 255, 255, 210))
+            p.setFont(_font(9, 600))
+            p.drawText(QRectF(bx - 74, by + 12, 74, 14), Qt.AlignmentFlag.AlignRight,
+                       "-52 dBm")
+            p.setPen(QColor(255, 255, 255, 170))
+            p.drawText(QRectF(bx - 96, by + 26, 96, 14), Qt.AlignmentFlag.AlignRight,
+                       "4.2 Mbps · 42 ms")
+
+        # 数字变焦
+        if not compact:
+            p.setPen(QColor(255, 255, 255, 200))
+            p.setFont(_font(9, 700))
+            p.drawText(QRectF(w - 96, h - 52, 70, 14), Qt.AlignmentFlag.AlignRight, "ZOOM ×1.0")
+
+        # 目标框
+        if self.show_boxes:
+            fire = (0.44, 0.46, 0.40, 0.34)
+            smoke = (0.52, 0.15, 0.40, 0.28)
+            p.setFont(_font(8.5, 700))
+            for (rx, ry, rw_, rh), name, color, score in (
+                    (fire, "明火 fire", theme.RED, 95.9),
+                    (smoke, "烟雾 smoke", theme.AMBER, 86.0)):
+                jitter = math.sin(self.phase * 0.9) * 1.2
+                box = QRectF(w * rx + jitter, h * ry, w * rw_, h * rh)
+                p.setPen(QPen(QColor(color), 1.4))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRect(box)
+                tag = f"{name} {score:.1f}%"
+                tw = p.fontMetrics().horizontalAdvance(tag) + 10
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(color))
+                p.drawRoundedRect(QRectF(box.left(), box.top() - 15, tw, 15), 3, 3)
+                p.setPen(QColor("#FFFFFF"))
+                p.drawText(QRectF(box.left() + 5, box.top() - 15, tw, 15),
+                           Qt.AlignmentFlag.AlignVCenter, tag)
+
+        # 底部遥测
+        bar = QRectF(10, h - 32, w - 20, 22)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(8, 14, 18, 150))
+        p.drawRoundedRect(bar, 6, 6)
+        p.setFont(_font(9, 600))
+        p.setPen(QColor(255, 255, 255, 225))
+        alt = 92 if self.engine is None else 92
+        spd = 4.3 if self.engine is None else 4.3
+        bat = 51 if self.engine is None else 51
+        if compact:
+            p.drawText(bar.adjusted(8, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter,
+                       f"ALT {alt}m  SPD {spd}  BAT {bat}%")
+        else:
+            p.drawText(bar.adjusted(10, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter,
+                       f"ALT {alt} m    SPD {spd} m/s    HDG 041°    BAT {bat}%    GPS 12")
+            p.drawText(bar.adjusted(0, 0, -10, 0),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                       "640×512 30FPS  H.265" if self.mode == "ir" else "1080P 30FPS  H.265")

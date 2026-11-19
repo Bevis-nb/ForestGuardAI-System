@@ -8,13 +8,15 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QLabel,
+    QPushButton,
     QSlider,
     QVBoxLayout,
     QWidget,
 )
 
 from .. import icons, theme
-from ..canvas import CameraView
+from ..canvas import CameraView, VideoFeed
 from ..charts import LineChart
 from ..simulation import Robot, SimEngine
 from ..widgets import (
@@ -170,7 +172,52 @@ class TelemetryGauge(QWidget):
 
 
 class RemoteControlDialog(QDialog):
-    """亮色遥控终端：方向控制 + 云台 + 喷洒 + 一键返航。"""
+    """遥控终端：真实视频流画面（EO / 红外）+ 键盘直控。"""
+
+    KEYMAP = {
+        Qt.Key.Key_W: "前进", Qt.Key.Key_S: "后退",
+        Qt.Key.Key_A: "左移", Qt.Key.Key_D: "右移",
+        Qt.Key.Key_J: "左旋", Qt.Key.Key_L: "右旋",
+        Qt.Key.Key_I: "上升", Qt.Key.Key_K: "下降",
+        Qt.Key.Key_Space: "悬停",
+    }
+
+    DARK_QSS = """
+    #console { background: #0D1216; border-radius: 18px; }
+    #console QLabel { color: #C6D5CE; }
+    #console QLabel[role="title"] { color: #FFFFFF; }
+    #console QLabel[role="caption"] { color: #7C8F87; }
+    #console QLabel[role="strong"] { color: #EAF3EE; }
+    #console QPushButton[variant="dp"] {
+        background: #182026; border: 1px solid #26343B; border-radius: 9px;
+        color: #D8E5DF; font-weight: 600;
+    }
+    #console QPushButton[variant="dp"]:hover { background: #223038; border-color: #12A66A; }
+    #console QPushButton[variant="dp"]:pressed { background: #12A66A; color: #FFFFFF; }
+    #console QPushButton[variant="dpCenter"] {
+        background: #12A66A; border: 1px solid #16C07C; border-radius: 9px;
+        color: #FFFFFF; font-weight: 700;
+    }
+    #console QPushButton[variant="dpCenter"]:hover { background: #16C07C; }
+    #console QPushButton[variant="darkSoft"] {
+        background: #182026; border: 1px solid #26343B; border-radius: 9px;
+        color: #D8E5DF; font-weight: 600;
+    }
+    #console QPushButton[variant="darkSoft"]:hover { background: #223038; border-color: #12A66A; }
+    #console QPushButton[variant="darkDanger"] {
+        background: rgba(229, 72, 77, 0.16); border: 1px solid rgba(229, 72, 77, 0.45);
+        border-radius: 9px; color: #FF9EA1; font-weight: 600;
+    }
+    #console QPushButton[variant="darkDanger"]:hover { background: rgba(229, 72, 77, 0.28); }
+    #console QSlider::groove:horizontal {
+        height: 4px; background: #24313A; border-radius: 2px;
+    }
+    #console QSlider::sub-page:horizontal { background: #12A66A; border-radius: 2px; }
+    #console QSlider::handle:horizontal {
+        background: #FFFFFF; width: 12px; height: 12px; margin: -5px 0; border-radius: 6px;
+        border: 2px solid #12A66A;
+    }
+    """
 
     def __init__(self, engine: SimEngine, robot: Robot, parent=None):
         super().__init__(parent)
@@ -179,160 +226,196 @@ class RemoteControlDialog(QDialog):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setModal(False)
-        self.resize(880, 560)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.resize(880, 512)
         self._drag = None
+        self.connected = True
 
         shell = QFrame(self)
-        shell.setObjectName("Card")
-        shadow(shell, 40, 10, 60)
+        shell.setObjectName("console")
+        shell.setStyleSheet(self.DARK_QSS)
+        shadow(shell, 44, 12, 70)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(shell)
         body = QVBoxLayout(shell)
-        body.setContentsMargins(20, 16, 20, 18)
-        body.setSpacing(12)
+        body.setContentsMargins(18, 14, 18, 16)
+        body.setSpacing(10)
 
-        # 标题栏
+        # ---------------- 标题栏 ----------------
         head = QHBoxLayout()
         head.setSpacing(9)
         color = theme.BLUE if robot.kind == "UAV" else theme.ACCENT
-        soft = theme.BLUE_SOFT if robot.kind == "UAV" else theme.ACCENT_SOFT
-        head.addWidget(IconTile("drone" if robot.kind == "UAV" else "robot", color, soft, 34, 17, 10))
+        head.addWidget(IconTile("drone" if robot.kind == "UAV" else "robot",
+                                color, "#1A2530", 32, 16, 9))
         col = QVBoxLayout()
         col.setSpacing(0)
-        col.addWidget(label(f"遥控终端 · {robot.id} {robot.name}", None, size=15, weight=700))
-        col.addWidget(label(f"{robot.model} · 链路时延 42 ms · 加密通道", "caption"))
+        t = label(f"遥控终端 · {robot.id} {robot.name}", None, size=14, weight=700,
+                  color="#FFFFFF")
+        t.setProperty("role", "title")
+        col.addWidget(t)
+        c = label(f"{robot.model} · 2.4G 加密链路 · 时延 42 ms", None, size=10.5,
+                  color="#7C8F87")
+        c.setProperty("role", "caption")
+        col.addWidget(c)
         head.addLayout(col)
         head.addStretch(1)
+
         self.link_pill = Pill("链路正常", "success")
         head.addWidget(self.link_pill)
-        head.addWidget(icon_button("close", theme.MUTED, 32, 16, self.close))
+        self.link_btn = QPushButton("断开")
+        self.link_btn.setProperty("variant", "darkSoft")
+        self.link_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.link_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.link_btn.setFixedSize(58, 28)
+        self.link_btn.clicked.connect(self._toggle_link)
+        head.addWidget(self.link_btn)
+        close = QPushButton("×")
+        close.setProperty("variant", "darkSoft")
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        close.setFixedSize(28, 28)
+        close.setStyleSheet("color:#D8E5DF; font-size:16px; padding:0px;")
+        close.clicked.connect(self.close)
+        head.addWidget(close)
         body.addLayout(head)
 
+        # ---------------- 主体 ----------------
         content = QHBoxLayout()
-        content.setSpacing(14)
+        content.setSpacing(12)
 
-        # 左：画面 + 遥测
+        # 左：视频 + 按键提示
         left = QVBoxLayout()
-        left.setSpacing(10)
-        self.cam = CameraView(engine)
-        self.cam.setMinimumSize(420, 250)
-        left.addWidget(self.cam, 1)
-        tele = QHBoxLayout()
-        tele.setSpacing(6)
-        self.chips = {
-            "alt": kv_chip("activity", f"高度 {robot.altitude:.0f} m"),
-            "speed": kv_chip("wind", f"速度 {robot.speed:.1f} m/s"),
-            "bat": kv_chip("battery", f"电量 {robot.battery:.0f}%"),
-            "temp": kv_chip("thermo", f"温度 {robot.temp:.1f} ℃", theme.AMBER, theme.AMBER_SOFT),
-        }
-        for chip in self.chips.values():
-            tele.addWidget(chip)
-        tele.addStretch(1)
-        left.addLayout(tele)
-        sw_row = QHBoxLayout()
-        sw_row.setSpacing(8)
-        sw_row.addWidget(label("热成像", "caption"))
-        self.thermal = ToggleSwitch(False)
-        self.thermal.toggled.connect(self.cam.set_thermal)
-        sw_row.addWidget(self.thermal)
-        sw_row.addStretch(1)
-        sw_row.addWidget(label("云台 0.0° / 0.0°", "caption"))
-        left.addLayout(sw_row)
-        content.addLayout(left, 3)
+        left.setSpacing(7)
+        self.feed = VideoFeed(engine, "eo", True)
+        self.feed.setMinimumHeight(300)
+        left.addWidget(self.feed, 1)
 
-        # 右：控制
-        right = QVBoxLayout()
-        right.setSpacing(10)
+        hint = QLabel("W 前进 · S 后退 · A 左移 · D 右移 · J/L 偏航 · I/K 升降 · 空格 悬停 · ESC 关闭")
+        hint.setStyleSheet("color:#7C8F87; font-size:10.5px; background:transparent;")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        left.addWidget(hint)
+        content.addLayout(left, 1)
 
-        dpad_wrap = QWidget()
-        soft_bg(dpad_wrap, theme.SURFACE_ALT, 14)
-        dpad = QGridLayout(dpad_wrap)
-        dpad.setContentsMargins(14, 12, 14, 12)
-        dpad.setSpacing(6)
-        self._dir_buttons = {}
-        layout_cells = [
-            (0, 0, "左旋"), (0, 1, "前进"), (0, 2, "右旋"),
-            (1, 0, "左移"), (1, 1, "悬停"), (1, 2, "右移"),
-            (2, 0, "上升"), (2, 1, "后退"), (2, 2, "下降"),
-        ]
-        for r, c, text in layout_cells:
-            center = text == "悬停"
-            btn = button(text, "primary" if center else "soft", height=40, size=12,
-                         on_click=lambda _=False, t=text: self._command(t))
-            btn.setMinimumWidth(74)
-            self._dir_buttons[text] = btn
-            dpad.addWidget(btn, r, c)
-        right.addWidget(dpad_wrap)
+        # 右：控制列
+        rail = QVBoxLayout()
+        rail.setSpacing(8)
 
-        speed_row = QHBoxLayout()
-        speed_row.setSpacing(8)
-        speed_row.addWidget(label("速度上限", "muted"))
-        speed_row.addStretch(1)
-        self.speed_label = label("2.0 m/s", None, size=11.5, weight=700)
-        speed_row.addWidget(self.speed_label)
-        right.addLayout(speed_row)
+        stats = QGridLayout()
+        stats.setHorizontalSpacing(6)
+        stats.setVerticalSpacing(6)
+        self.stat_labels = {}
+        stats.setColumnStretch(0, 1)
+        stats.setColumnStretch(1, 1)
+        for i, (k, v) in enumerate((("链路", "-52 dBm"), ("码率", "4.2 Mbps"),
+                                    ("电量", f"{robot.battery:.0f}%"),
+                                    ("续航", f"{max(6, int(robot.battery * 0.22))} min"))):
+            tile = QWidget()
+            soft_bg(tile, "#141B21", 9)
+            lay = QVBoxLayout(tile)
+            lay.setContentsMargins(9, 6, 9, 6)
+            lay.setSpacing(0)
+            kl = label(k, None, size=9.5, color="#7C8F87")
+            vl = label(v, None, size=12, weight=700, color="#EAF3EE")
+            lay.addWidget(kl)
+            lay.addWidget(vl)
+            self.stat_labels[k] = vl
+            stats.addWidget(tile, i // 2, i % 2)
+        rail.addLayout(stats)
+
+        dpad = QGridLayout()
+        dpad.setSpacing(5)
+        cells = [(0, 0, "左旋"), (0, 1, "前进"), (0, 2, "右旋"),
+                 (1, 0, "左移"), (1, 1, "悬停"), (1, 2, "右移"),
+                 (2, 0, "上升"), (2, 1, "后退"), (2, 2, "下降")]
+        for r, c, text in cells:
+            b = QPushButton(text)
+            b.setProperty("variant", "dpCenter" if text == "悬停" else "dp")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setFixedHeight(32)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.setStyleSheet("font-size:11.5px;")
+            b.clicked.connect(lambda _=False, t=text: self._command(t))
+            dpad.addWidget(b, r, c)
+        rail.addLayout(dpad)
+
+        spd_row = QHBoxLayout()
+        spd_row.setSpacing(6)
+        spd_row.addWidget(label("速度上限", None, size=10.5, color="#7C8F87"))
+        spd_row.addStretch(1)
+        self.speed_label = label("2.0 m/s", None, size=11, weight=700, color="#EAF3EE")
+        spd_row.addWidget(self.speed_label)
+        rail.addLayout(spd_row)
         self.speed = QSlider(Qt.Orientation.Horizontal)
         self.speed.setRange(5, 80)
         self.speed.setValue(20)
         self.speed.valueChanged.connect(lambda v: self.speed_label.setText(f"{v / 10:.1f} m/s"))
-        right.addWidget(self.speed)
+        rail.addWidget(self.speed)
 
-        spray = QWidget()
-        soft_bg(spray, theme.SURFACE_ALT, 12)
-        spray_lay = QHBoxLayout(spray)
-        spray_lay.setContentsMargins(12, 9, 12, 9)
-        spray_lay.addWidget(label("喷洒 / 载荷", "muted"))
-        spray_lay.addStretch(1)
+        spray_row = QHBoxLayout()
+        spray_row.setSpacing(6)
+        spray_row.addWidget(label("喷洒 / 载荷", None, size=10.5, color="#7C8F87"))
+        spray_row.addStretch(1)
         self.spray = ToggleSwitch(False)
         self.spray.toggled.connect(lambda v: self._command("开启喷洒" if v else "关闭喷洒"))
-        spray_lay.addWidget(self.spray)
-        right.addWidget(spray)
+        spray_row.addWidget(self.spray)
+        self.thermal = ToggleSwitch(False)
+        self.thermal.toggled.connect(self._toggle_thermal)
+        spray_row.addWidget(label("红外", None, size=10.5, color="#7C8F87"))
+        spray_row.addWidget(self.thermal)
+        rail.addLayout(spray_row)
 
-        actions = QHBoxLayout()
-        actions.setSpacing(8)
-        actions.addWidget(button("一键返航", "blue", "home", height=38,
-                                 on_click=lambda: self._command("返航")), 1)
-        actions.addWidget(button("急停", "dangerSoft", "power", height=38,
-                                 on_click=lambda: self._command("急停")), 1)
-        right.addLayout(actions)
+        acts = QHBoxLayout()
+        acts.setSpacing(6)
+        home_btn = QPushButton("一键返航")
+        home_btn.setProperty("variant", "darkSoft")
+        home_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        home_btn.setFixedHeight(32)
+        home_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        home_btn.clicked.connect(lambda: self._command("返航"))
+        stop_btn = QPushButton("急停")
+        stop_btn.setProperty("variant", "darkDanger")
+        stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        stop_btn.setFixedHeight(32)
+        stop_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        stop_btn.clicked.connect(lambda: self._command("急停"))
+        acts.addWidget(home_btn, 1)
+        acts.addWidget(stop_btn, 1)
+        rail.addLayout(acts)
 
-        log_panel = QWidget()
-        soft_bg(log_panel, theme.SURFACE_ALT, 12)
-        log_lay = QVBoxLayout(log_panel)
-        log_lay.setContentsMargins(12, 9, 12, 9)
-        log_lay.setSpacing(4)
-        log_lay.addWidget(label("指令回执", "caption"))
-        self.log = label("等待指令…", "caption", color=theme.MUTED)
+        self.log = label("等待指令…", None, size=10, color="#8FA79C")
         self.log.setWordWrap(True)
-        log_lay.addWidget(self.log)
-        right.addWidget(log_panel)
+        self.log.setFixedHeight(34)
+        rail.addWidget(self.log)
+        rail.addStretch(1)
+        content.addLayout(rail, 0)
+        rail.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        info = QVBoxLayout()
-        info.setSpacing(2)
-        for k, v in (("剩余续航", f"{max(6, int(robot.battery * 0.22))} min"),
-                     ("载荷余量", "12 L" if robot.kind == "UGV" else "4 L"),
-                     ("定位精度", "±0.08 m"),
-                     ("链路质量", f"{robot.signal:.0f}% · 42 ms")):
-            row = QHBoxLayout()
-            row.addWidget(label(k, "caption"))
-            row.addStretch(1)
-            row.addWidget(label(v, None, size=11.5, weight=600, color=theme.TEXT_SOFT))
-            info.addLayout(row)
-        right.addSpacing(2)
-        right.addLayout(info)
-        right.addStretch(1)
-        right.addStretch(1)
-        content.addLayout(right, 2)
         body.addLayout(content, 1)
 
-        self.timer = QTimer(self)
-        self.timer.setInterval(900)
-        self.timer.timeout.connect(self._tick)
-        self.timer.start()
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
 
     # ------------------------------------------------------------------
+    def _toggle_link(self):
+        self.connected = not self.connected
+        self.feed.set_connected(self.connected)
+        self.link_btn.setText("断开" if self.connected else "重连")
+        self.link_pill.set_kind("success" if self.connected else "critical")
+        self.link_pill.set_text("链路正常" if self.connected else "未连接")
+        self.log.setText("视频链路已断开，飞行器保持悬停。" if not self.connected
+                         else "链路已恢复，视频流重连成功。")
+
+    def _toggle_thermal(self, on: bool):
+        self.feed.set_mode("ir" if on else "eo")
+        self.log.setText("已切换至红外热成像通道。" if on else "已切换至可见光通道。")
+
     def _command(self, text: str):
+        if not self.connected and text != "返航":
+            self.log.setText("链路未连接，指令已排队等待重连…")
+            return
         r = self.robot
         if text == "返航":
             r.status = "returning"
@@ -345,16 +428,27 @@ class RemoteControlDialog(QDialog):
         elif text in ("开启喷洒", "关闭喷洒"):
             self.log.setText(f"{r.id} 载荷状态：{text}")
         else:
-            self.log.setText(f"{r.id} 执行「{text}」，速度 {self.speed.value() / 10:.1f} m/s")
-        self.link_pill.set_text("指令已送达")
+            self.log.setText(f"{r.id} 执行「{text}」· {self.speed.value() / 10:.1f} m/s")
+        if self.connected:
+            self.link_pill.set_text("指令已送达")
 
     def _tick(self):
         if not self.isVisible():
             return
         r = self.robot
-        self.chips["bat"].set_text(f"电量 {r.battery:.0f}%")
-        self.chips["temp"].set_text(f"温度 {r.temp:.1f} ℃")
-        self.chips["speed"].set_text(f"速度 {r.speed:.1f} m/s")
+        if "电量" in self.stat_labels:
+            self.stat_labels["电量"].setText(f"{r.battery:.0f}%")
+
+    # ------------------------------------------------------------------
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+            return
+        cmd = self.KEYMAP.get(event.key())
+        if cmd:
+            self._command(cmd)
+            return
+        super().keyPressEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
