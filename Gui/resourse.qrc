@@ -1,0 +1,23 @@
+<RCC>
+  <qresource prefix="image">
+    <file>image/robot1.png</file>
+    <file>image/robot2.png</file>
+    <file>image/robot.jpg</file>
+    <file>image/left_bg.png</file>
+    <file>image/上升.png</file>
+    <file>image/向上.png</file>
+    <file>image/左旋.png</file>
+    <file>image/向下.png</file>
+    <file>image/向右.png</file>
+    <file>image/向左.png</file>
+    <file>image/futureSicence.jpeg</file>
+    <file>image/green_light.png</file>
+    <file>image/logo_max.png</file>
+    <file>image/logo_min.png</file>
+    <file>image/home.png</file>
+    <file>image/info.png</file>
+    <file>image/map.png</file>
+    <file>image/red_light.png</file>
+    <file>image/setting.png</file>
+  </qresource>
+</RCC>
