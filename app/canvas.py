@@ -361,7 +361,22 @@ class TerrainMap(QWidget):
 
     def _paint_fire(self, p: QPainter, r: QRectF):
         center = self.pt(self.engine.fire_origin)
-        pulse = 1 + 0.08 * math.sin(self.phase * 2.2)
+        f = self.engine.fire
+        if f.state == "extinguished" or f.intensity <= 0.1:
+            # 已扑灭状态：绿色安全脉冲 + 标牌
+            p.setPen(QPen(C(theme.ACCENT), 2))
+            p.setBrush(QColor(18, 166, 106, 40))
+            p.drawEllipse(center, 18, 18)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(C(theme.ACCENT))
+            p.drawEllipse(center, 6, 6)
+            p.setFont(_font(9.5, 700))
+            p.setPen(C(theme.ACCENT_DARK))
+            p.drawText(QPointF(center.x() + 12, center.y() - 6), f"火点 {f.id} · 已扑灭 ✓")
+            return
+
+        scale = 0.45 + 0.65 * (f.intensity / 100.0)
+        pulse = (1 + 0.08 * math.sin(self.phase * 2.2)) * scale
         rad = QRectF(center.x() - 46 * pulse, center.y() - 46 * pulse, 92 * pulse, 92 * pulse)
         grad = QRadialGradient(center, 52 * pulse)
         grad.setColorAt(0.0, QColor(255, 120, 60, 230))
@@ -379,13 +394,14 @@ class TerrainMap(QWidget):
         p.drawEllipse(center, 2.2, 2.2)
 
         # 烟雾粒子
-        for i in range(5):
+        smoke_count = max(1, int(5 * (f.intensity / 100.0)))
+        for i in range(smoke_count):
             t = (self.phase * 0.6 + i * 0.21) % 1.0
-            alpha = int(120 * (1 - t))
+            alpha = int(120 * (1 - t) * (f.intensity / 100.0))
             p.setBrush(QColor(120, 130, 126, alpha))
             px = center.x() + math.sin(t * 6 + i) * (12 + 26 * t) - t * 8
             py = center.y() - 6 - 52 * t
-            rad_s = 7 + 12 * t
+            rad_s = (7 + 12 * t) * scale
             p.drawEllipse(QPointF(px, py), rad_s, rad_s)
 
         if self._highlight > 0:
@@ -396,7 +412,7 @@ class TerrainMap(QWidget):
 
         p.setFont(_font(9, 700))
         p.setPen(C(theme.RED))
-        p.drawText(QPointF(center.x() + 12, center.y() - 10), "火点 A-03")
+        p.drawText(QPointF(center.x() + 12, center.y() - 10), f"火点 {f.id} ({f.intensity:.0f}%)")
 
     def _paint_costmap(self, p: QPainter, r: QRectF):
         center = self.pt(self.engine.fire_origin)
@@ -496,11 +512,33 @@ class TerrainMap(QWidget):
     def _paint_robots(self, p: QPainter, r: QRectF):
         if not self._show_robots:
             return
+        fire_pt = self.pt(self.engine.fire_origin)
         for robot in self.engine.robots:
             if self.mode == "navigation" and robot.kind == "UGV":
                 continue
             pos = self.pt((robot.x, robot.y))
             color = theme.BLUE if robot.kind == "UAV" else theme.ACCENT
+
+            # 赶赴火点虚线轨迹
+            if robot.mission == "en_route":
+                tpt = self.pt((robot.target_x, robot.target_y))
+                pen = QPen(QColor(color), 1.4, Qt.PenStyle.DashLine)
+                pen.setDashPattern([4, 4])
+                p.setPen(pen)
+                p.drawLine(pos, tpt)
+
+            # 灭火喷洒水柱 / 粒子动画
+            if robot.spraying and self.engine.fire.state != "extinguished":
+                p.setPen(QPen(QColor(24, 174, 196, 160), 2.2))
+                p.drawLine(pos, fire_pt)
+                p.setPen(Qt.PenStyle.NoPen)
+                for k in range(4):
+                    t = (self.phase * 1.4 + k * 0.25) % 1.0
+                    sx = pos.x() + (fire_pt.x() - pos.x()) * t
+                    sy = pos.y() + (fire_pt.y() - pos.y()) * t
+                    p.setBrush(QColor(56, 189, 248, int(220 * (1 - t * 0.5))))
+                    p.drawEllipse(QPointF(sx, sy), 3.2, 3.2)
+
             self._draw_badge(p, pos, "drone" if robot.kind == "UAV" else "robot",
                              color, robot.id,
                              highlight=robot.id == self.selected_robot)
@@ -1267,3 +1305,211 @@ class VideoFeed(QWidget):
             p.drawText(bar.adjusted(0, 0, -10, 0),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                        "640×512 30FPS  H.265" if self.mode == "ir" else "1080P 30FPS  H.265")
+
+
+class FirstPerson3DView(QWidget):
+    """3D 游戏化第一人称视角（支持左右转向、前后移动、喷水灭火特效与红外切换）。"""
+
+    def __init__(self, engine: SimEngine, robot=None, parent=None):
+        super().__init__(parent)
+        self.engine = engine
+        self.robot = robot
+        self.yaw = 0.0        # 弧度，左右视角
+        self.pitch = 0.0      # 弧度，俯仰视角
+        self.pos_z = 0.0      # 前后推进偏移
+        self.spraying = False
+        self.thermal = False
+        self.connected = True
+        self.phase = 0.0
+        self._last_mouse = None
+        self.setMinimumHeight(300)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._timer = QTimer(self)
+        self._timer.setInterval(45)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+        # 预生成 3D 森林树木坐标 (x, z, height)
+        rng = random.Random(42)
+        self._trees = [
+            (rng.uniform(-4.5, 4.5), rng.uniform(1.8, 11.0), rng.uniform(0.7, 1.5))
+            for _ in range(42)
+        ]
+
+    def _tick(self):
+        if self.isVisible():
+            self.phase += 0.12
+            self.update()
+
+    def set_connected(self, connected: bool):
+        self.connected = connected
+        self.update()
+
+    def set_mode(self, mode: str):
+        self.thermal = (mode == "ir")
+        self.update()
+
+    def pan(self, dyaw: float = 0.0, dpitch: float = 0.0, dz: float = 0.0):
+        self.yaw = (self.yaw + dyaw) % (2 * math.pi)
+        self.pitch = max(-0.35, min(0.35, self.pitch + dpitch))
+        self.pos_z = max(-3.0, min(4.5, self.pos_z + dz))
+        self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._last_mouse = event.position()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._last_mouse is not None and (event.buttons() & Qt.MouseButton.LeftButton):
+            delta = event.position() - self._last_mouse
+            self._last_mouse = event.position()
+            self.pan(dyaw=delta.x() * 0.008, dpitch=-delta.y() * 0.005)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._last_mouse = None
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect())
+        w, h = r.width(), r.height()
+        clip = QPainterPath()
+        clip.addRoundedRect(r, 12, 12)
+        p.setClipPath(clip)
+
+        if not self.connected:
+            p.fillRect(r, C("#0E1418"))
+            p.setPen(C("#7C8F87"))
+            p.setFont(_font(14, 700))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, "3D 图传链路已断开 · 点击右上角重连")
+            p.end()
+            return
+
+        horizon_y = h * (0.46 + self.pitch * 0.55)
+
+        # 天空与地面
+        sky = QLinearGradient(0, 0, 0, horizon_y)
+        if self.thermal:
+            sky.setColorAt(0, C("#121329"))
+            sky.setColorAt(1, C("#341E38"))
+        else:
+            sky.setColorAt(0, C("#7EC8E3"))
+            sky.setColorAt(1, C("#D8EFE6"))
+        p.fillRect(QRectF(0, 0, w, horizon_y), sky)
+
+        ground = QLinearGradient(0, horizon_y, 0, h)
+        if self.thermal:
+            ground.setColorAt(0, C("#23182D"))
+            ground.setColorAt(1, C("#110D18"))
+        else:
+            ground.setColorAt(0, C("#3E6B48"))
+            ground.setColorAt(1, C("#1E3A26"))
+        p.fillRect(QRectF(0, horizon_y, w, h - horizon_y), ground)
+
+        # 3D 透视地面网格线（随 yaw / pos_z 移动）
+        p.setPen(QPen(QColor(255, 255, 255, 22 if not self.thermal else 30), 1))
+        for i in range(1, 9):
+            t = i / 9.0
+            y = horizon_y + (h - horizon_y) * (t ** 1.7)
+            p.drawLine(QPointF(0, y), QPointF(w, y))
+        for gx in range(-6, 7):
+            x_off = (gx - math.sin(self.yaw) * 2.5) * 90
+            p.drawLine(QPointF(w * 0.5 + x_off * 0.15, horizon_y),
+                       QPointF(w * 0.5 + x_off * 1.4, h))
+
+        # 3D 投影函数
+        def project(wx: float, wz: float):
+            rx = wx * math.cos(self.yaw) - wz * math.sin(self.yaw)
+            rz = wx * math.sin(self.yaw) + wz * math.cos(self.yaw) - self.pos_z
+            if rz < 0.6:
+                return None
+            scale = 340.0 / rz
+            sx = w * 0.5 + rx * scale
+            sy = horizon_y + (1.1 * scale) * 0.35
+            return sx, sy, scale, rz
+
+        # 绘制 3D 树木（按远近排序）
+        items = []
+        for tx, tz, th in self._trees:
+            proj = project(tx, tz)
+            if proj:
+                items.append((proj[3], "tree", proj, th))
+
+        # 火点 3D 位置（正前方 5.2m）
+        f_proj = project(0.0, 5.2)
+        if f_proj:
+            items.append((f_proj[3], "fire", f_proj, 1.0))
+
+        items.sort(key=lambda x: x[0], reverse=True)
+        for _rz, kind, (sx, sy, sc, _), extra in items:
+            if kind == "tree":
+                tw = max(4.0, sc * 0.22)
+                th_px = max(12.0, sc * 0.65 * extra)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(C("#2C1E16") if not self.thermal else C("#3B2840"))
+                p.drawRect(QRectF(sx - tw * 0.14, sy - th_px * 0.25, tw * 0.28, th_px * 0.25))
+                p.setBrush(C("#245937") if not self.thermal else C("#4A3052"))
+                tri = QPainterPath(QPointF(sx, sy - th_px))
+                tri.lineTo(sx - tw * 0.6, sy - th_px * 0.22)
+                tri.lineTo(sx + tw * 0.6, sy - th_px * 0.22)
+                tri.closeSubpath()
+                p.drawPath(tri)
+            elif kind == "fire":
+                f = self.engine.fire
+                if f.state != "extinguished" and f.intensity > 0.1:
+                    f_scale = 0.5 + 0.7 * (f.intensity / 100.0)
+                    rad = max(18.0, sc * 0.48 * f_scale)
+                    glow = QRadialGradient(QPointF(sx, sy - rad * 0.4), rad * 1.4)
+                    glow.setColorAt(0.0, QColor(255, 240, 140, 235))
+                    glow.setColorAt(0.45, QColor(255, 110, 40, 185))
+                    glow.setColorAt(1.0, QColor(255, 60, 20, 0))
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(glow)
+                    p.drawEllipse(QPointF(sx, sy - rad * 0.4), rad * 1.4, rad * 1.1)
+                    # 3D 跳动火舌
+                    for k in range(3):
+                        fl = rad * (0.75 + 0.2 * math.sin(self.phase * 2.1 + k))
+                        p.setBrush(QColor(255, 160 - k * 30, 40, 200))
+                        p.drawEllipse(QPointF(sx + (k - 1) * rad * 0.22, sy - fl * 0.5),
+                                      rad * 0.28, fl * 0.55)
+                else:
+                    p.setPen(QPen(C(theme.ACCENT), 2))
+                    p.setBrush(QColor(18, 166, 106, 80))
+                    p.drawEllipse(QPointF(sx, sy), 24, 10)
+                    p.setPen(C("#FFFFFF"))
+                    p.setFont(_font(11, 700))
+                    p.drawText(QPointF(sx - 28, sy - 18), "火点已扑灭 ✓")
+
+        # 第一人称喷水灭火水柱特效
+        if self.spraying:
+            p.setPen(QPen(QColor(56, 189, 248, 190), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(QPointF(w * 0.5, h), QPointF(w * 0.5, horizon_y + 12))
+            p.setPen(Qt.PenStyle.NoPen)
+            for k in range(8):
+                t = (self.phase * 1.8 + k * 0.125) % 1.0
+                py = h - (h - (horizon_y + 12)) * t
+                px = w * 0.5 + math.sin(t * 10 + k) * 8 * t
+                p.setBrush(QColor(186, 230, 253, int(220 * (1 - t * 0.4))))
+                p.drawEllipse(QPointF(px, py), 4.5, 4.5)
+
+        # HUD 准星与航向角
+        cx, cy = w * 0.5, h * 0.5
+        p.setPen(QPen(QColor(255, 255, 255, 160), 1.4))
+        p.drawLine(QPointF(cx - 14, cy), QPointF(cx - 5, cy))
+        p.drawLine(QPointF(cx + 5, cy), QPointF(cx + 14, cy))
+        p.drawLine(QPointF(cx, cy - 14), QPointF(cx, cy - 5))
+        p.drawLine(QPointF(cx, cy + 5), QPointF(cx, cy + 14))
+
+        deg = int(math.degrees(self.yaw)) % 360
+        bar = QRectF(10, h - 32, w - 20, 22)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(8, 14, 18, 165))
+        p.drawRoundedRect(bar, 6, 6)
+        p.setFont(_font(9.5, 600))
+        p.setPen(QColor(255, 255, 255, 230))
+        p.drawText(bar.adjusted(10, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter,
+                   f"3D 第一人称视角 · 航向 {deg:03d}° · 火势 {self.engine.fire.intensity:.0f}% · 鼠标拖拽/ADJL左右转")
+        p.end()

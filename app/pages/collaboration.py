@@ -77,6 +77,16 @@ class CollaborationPage(ScrollPage):
         auction.addLayout(hint)
         left.addWidget(auction, 1)
 
+        # 新增：自主调度说明与评判标准面板
+        explain = Panel("自主协同调度 · 任务安排说明与评判标准",
+                        "评判标准：能力匹配 40% + 距火点距离 25% + 剩余电量 20% + 载荷/水量 15%", "sparkles")
+        explain.add_action(button("重新评估派单", "soft", "refresh", height=26,
+                                  on_click=self._re_evaluate))
+        self.dispatch_box = QVBoxLayout()
+        self.dispatch_box.setSpacing(6)
+        explain.addLayout(self.dispatch_box)
+        left.addWidget(explain, 1)
+
         negotiate = Panel("分布式协商 · 路径冲突消解", "基于优先级的让行协商，避免机间冲突", "link")
         negotiate.add_action(Pill("冲突 2", "warning"))
         self.neg_log = EventList(engine.events[:3], limit=4)
@@ -207,7 +217,34 @@ class CollaborationPage(ScrollPage):
         self.neg_log.set_events(self.engine.events[:4])
         toast(self, f"编队已切换为 {text}")
 
+    def _re_evaluate(self):
+        self.engine.evaluate_and_dispatch()
+        self._refresh_dispatch()
+        toast(self, "已根据最新火点与装备状态重新评估并指派编队", "success")
+
+    def _refresh_dispatch(self):
+        while self.dispatch_box.count():
+            item = self.dispatch_box.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        plan = self.engine.dispatch_plan
+        if not plan:
+            self.dispatch_box.addWidget(label("暂无调度记录，点击「重新评估派单」生成", "caption", color=theme.MUTED))
+            return
+        for p in plan:
+            row_w = QWidget()
+            row_l = QHBoxLayout(row_w)
+            row_l.setContentsMargins(6, 4, 6, 4)
+            row_l.setSpacing(8)
+            kind = "info" if p["kind"] == "UAV" else "success"
+            row_l.addWidget(Pill(f"{p['robot_id']}", kind, dot=False))
+            row_l.addWidget(mk_label(p["task"], None, size=12, weight=700))
+            row_l.addWidget(mk_label(p["reason"], None, color=theme.MUTED, size=11), 1)
+            self.dispatch_box.addWidget(row_w)
+
     def _refresh(self):
+        self._refresh_dispatch()
         e = self.engine
         self.s_tasks.set_value(str(sum(1 for t in e.tasks if t["status"] == "待分配")))
         self.coverage = e.coverage
