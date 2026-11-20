@@ -29,10 +29,13 @@ class OverviewPage(ScrollPage):
             "智护森林 ForestGuard AI · 林区火情态势与多机协同实时监控",
             padding=(20, 14, 10, 12),
         )
-        self.add_action(Pill("系统运行正常", "success"))
-        self.add_action(button("导出态势简报", "soft", "download", height=34,
-                               on_click=lambda: toast(self, "态势简报已生成，保存至 reports/overview.pdf")))
-        self.add_action(button("一键启动预案", "primary", "sparkles", height=34,
+        self.fire_pill = Pill("扑救进行中", "warning")
+        self.add_action(self.fire_pill)
+        self.speed_btn = button("1× 倍速", "ghost", "clock", height=34, on_click=self._cycle_speed)
+        self.add_action(self.speed_btn)
+        self.add_action(button("随机起火", "dangerSoft", "flame", height=34,
+                               on_click=self._ignite_random))
+        self.add_action(button("自主扑救", "primary", "sparkles", height=34,
                                on_click=self._quick_plan))
 
         self._build_stats()
@@ -166,8 +169,13 @@ class OverviewPage(ScrollPage):
     def _on_event_added(self, _ev=None):
         self.events.set_events(self.engine.events)
 
-    def _on_alert_added(self, _ev=None):
+    def _on_alert_added(self, ev=None):
         self._refresh_alerts()
+        if ev and self.isVisible():
+            lv = ev.get("level", "info")
+            if lv in ("critical", "success"):
+                toast(self, f"{ev.get('title', '')} · {ev.get('detail', '')}",
+                      "error" if lv == "critical" else "success")
 
     def _refresh_alerts(self):
         while self.alert_list.count():
@@ -202,6 +210,15 @@ class OverviewPage(ScrollPage):
         self.bar_hum.set_value(min(100, (100 - e.humidity) * 1.1))
         self.bar_wind.set_value(min(100, e.wind_speed / 10 * 100))
         self.contain_pill.set_text(f"控制率 {e.containment:.1f}%")
+        st_map = {
+            "spreading": ("火势蔓延", "critical"),
+            "suppressing": ("扑救压制中", "warning"),
+            "contained": ("火势已控", "info"),
+            "extinguished": ("已扑灭 ✓", "success"),
+        }
+        st_txt, st_kind = st_map.get(e.fire.state, ("监控中", "info"))
+        self.fire_pill.set_text(f"{e.fire.id} {st_txt}")
+        self.fire_pill.set_kind(st_kind)
         fire, smoke, normal = e.vision_scores()
         self.fire_bar.set_value(fire)
         self.smoke_bar.set_value(smoke)
@@ -211,19 +228,21 @@ class OverviewPage(ScrollPage):
             self._refresh_robot_rows()
 
     # ------------------------------------------------------------------
-    def _quick_plan(self):
-        from ..widgets import Dialog
+    def _ignite_random(self):
+        f = self.engine.ignite_random_fire()
+        self.map.highlight_fire()
+        toast(self, f"火点 {f.id} 已触发，系统已自主指派空地编队前往扑救", "warning")
 
-        Dialog(
-            self, "启动空地协同预案 A",
-            "将调度 4 架无人机与 4 台地面机器人，按楔形阵列推进至火线北侧，"
-            "同时开挖东侧隔离带。是否立即下发指令？",
-            kind="warning", confirm_text="立即下发",
-            on_confirm=lambda: (
-                self.engine.push_event("预设方案 A「空地协同压制」已下发，8 台装备进入编队", "success"),
-                toast(self, "方案已下发，编队正在集结"),
-            ),
-        ).exec()
+    def _cycle_speed(self):
+        nxt = {1: 2, 2: 4, 4: 1}.get(self.engine.sim_speed, 1)
+        self.engine.sim_speed = nxt
+        self.speed_btn.setText(f"{nxt}× 倍速")
+        toast(self, f"仿真推演速度已切换为 {nxt}×", "info")
+
+    def _quick_plan(self):
+        plan = self.engine.evaluate_and_dispatch()
+        names = "、".join(p["robot_id"] for p in plan)
+        toast(self, f"自主协同调度完成：已指派 {names} 扑救 {self.engine.fire.id}", "success")
 
     def _go_alerts(self):
         window = self.window()

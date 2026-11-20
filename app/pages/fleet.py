@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import icons, theme
-from ..canvas import CameraView, VideoFeed
+from ..canvas import CameraView, FirstPerson3DView, VideoFeed
 from ..charts import LineChart
 from ..simulation import Robot, SimEngine
 from ..widgets import (
@@ -284,14 +284,14 @@ class RemoteControlDialog(QDialog):
         content = QHBoxLayout()
         content.setSpacing(12)
 
-        # 左：视频 + 按键提示
+        # 左：3D 第一人称视角 + 按键提示
         left = QVBoxLayout()
         left.setSpacing(7)
-        self.feed = VideoFeed(engine, "eo", True)
+        self.feed = FirstPerson3DView(engine, robot)
         self.feed.setMinimumHeight(300)
         left.addWidget(self.feed, 1)
 
-        hint = QLabel("W 前进 · S 后退 · A 左移 · D 右移 · J/L 偏航 · I/K 升降 · 空格 悬停 · ESC 关闭")
+        hint = QLabel("W/S 前进后退 · A/D 或 J/L 左右转动视角 · I/K 俯仰 · 鼠标拖拽视角 · ESC 关闭")
         hint.setStyleSheet("color:#7C8F87; font-size:10.5px; background:transparent;")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         left.addWidget(hint)
@@ -426,8 +426,21 @@ class RemoteControlDialog(QDialog):
             self.engine.estop = True
             self.engine.push_event(f"{r.id} 遥控急停，链路保持", "critical")
         elif text in ("开启喷洒", "关闭喷洒"):
+            self.feed.spraying = (text == "开启喷洒")
             self.log.setText(f"{r.id} 载荷状态：{text}")
         else:
+            if text in ("左移", "左旋"):
+                self.feed.pan(dyaw=-0.16)
+            elif text in ("右移", "右旋"):
+                self.feed.pan(dyaw=0.16)
+            elif text == "前进":
+                self.feed.pan(dz=0.35)
+            elif text == "后退":
+                self.feed.pan(dz=-0.35)
+            elif text == "上升":
+                self.feed.pan(dpitch=0.06)
+            elif text == "下降":
+                self.feed.pan(dpitch=-0.06)
             self.log.setText(f"{r.id} 执行「{text}」· {self.speed.value() / 10:.1f} m/s")
         if self.connected:
             self.link_pill.set_text("指令已送达")
