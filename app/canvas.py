@@ -522,8 +522,14 @@ class TerrainMap(QWidget):
             if self.mode == "navigation" and robot.kind == "UGV":
                 continue
             pos = self.pt((robot.x, robot.y))
-            is_dispatched = robot.mission in ("en_route", "spraying", "recon")
-            color = "#F59E0B" if is_dispatched else (theme.BLUE if robot.kind == "UAV" else theme.ACCENT)
+            if robot.battery < 20 or robot.temp > 50 or robot.status == "offline":
+                color = theme.RED          # 危险中
+            elif robot.mission in ("en_route", "spraying", "recon"):
+                color = "#F59E0B"          # 被调度中
+            elif robot.mission == "patrol":
+                color = theme.ACCENT       # 巡逻中
+            else:
+                color = theme.BLUE         # 待命 / 充电中
 
             # 赶赴火点虚线轨迹
             if robot.mission == "en_route":
@@ -600,10 +606,10 @@ class TerrainMap(QWidget):
 
     def _paint_legend(self, p: QPainter, r: QRectF):
         items = [
-            (theme.RED, "火点"),
-            (theme.BLUE, "无人机"),
-            (theme.ACCENT, "地面机器人"),
-            ("#F59E0B", "已调度"),
+            (theme.RED, "火点/危险"),
+            (theme.BLUE, "待命充电"),
+            ("#F59E0B", "被调度中"),
+            (theme.ACCENT, "巡逻中"),
             (theme.ACCENT_DARK, "基地"),
         ]
         if self.show_heat:

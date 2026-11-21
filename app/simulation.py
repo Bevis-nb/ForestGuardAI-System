@@ -286,6 +286,9 @@ class Robot:
     water_cap: float = 0.0
     suppression_power: float = 0.0  # 每 tick 压制强度
     arrived: bool = False
+    eta_seconds: float = 0.0
+    eta_status: str = "准时"     # 早到 / 准时 / 晚到
+    assigned_fire_id: str = ""
 
     @property
     def status_text(self) -> str:
@@ -313,6 +316,7 @@ class SimEngine(QObject):
     alert_added = Signal(dict)
     event_added = Signal(dict)
     recon_confirmed = Signal(object)
+    fire_appeared = Signal(object)
 
     def __init__(self, seed: int = 2026):
         super().__init__()
