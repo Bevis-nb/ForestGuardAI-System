@@ -21,7 +21,8 @@ ROBOT_OVERHEAT_TEMP = 60.0
 ROBOT_LOW_BATTERY = 30.0
 ROBOT_RECOVERY_TEMP = 35.0
 SPRAY_RANGE = 0.06  # 地图归一化距离，仅供仿真
-# 九条往返扫描航带，边界留出 0.08 地图单位；规划器负责绕开栅格障碍。
+PATROL_SENSOR_RADIUS = 0.11  # 演示用归一化视幅，不代表实际相机性能
+# 十条往返扫描航带；每条宽度按演示相机视幅计算，并非真实传感器覆盖。
 PATROL_WAYPOINTS = tuple((x, y) for i, y in enumerate((.08, .18, .28, .38, .48, .58, .68, .78, .88, .92))
                          for x in ((.08, .92) if i % 2 == 0 else (.92, .08)))
 
@@ -378,6 +379,8 @@ class Robot:
     route_failed: bool = False
     patrol_index: int = 0
     patrol_incomplete: bool = False
+    patrol_seen: set[tuple[int, int]] = field(default_factory=set)
+    patrol_gap: tuple[float, float] | None = None
 
     @property
     def status_text(self) -> str:
@@ -423,6 +426,9 @@ class SimEngine(QObject):
         super().__init__()
         self.rng = random.Random(seed)
         self.planner = GridPlanner()
+        # 演示无人机飞越地面障碍；空域禁飞区未建模。
+        self.air_planner = GridPlanner()
+        self.air_planner.blocked = set()
         self.spread_model = FireSpreadModel()
         self.started_at = datetime.now()
         self.paused = False
@@ -467,6 +473,9 @@ class SimEngine(QObject):
         self.baseline = self.planner.plan((0.16, 0.78), (0.52, 0.62), self.wind_deg,
                                           self.wind_speed, self.slope, self.fire_origin, algo="A*")
         self.robots = self._make_robots()
+        self.patrol_round = 0
+        self.patrol_members = {r.id for r in self.robots if r.mission == "patrol"}
+        self.patrol_completed: set[str] = set()
         self.alerts: list[dict] = []
         self.events: list[dict] = []
         self.tasks = self._make_tasks()
@@ -482,6 +491,9 @@ class SimEngine(QObject):
         """开始新的演练：就地重置装备，保留 UI 持有的 Robot 对象引用。"""
         for robot, initial in zip(self.robots, self._make_robots()):
             robot.__dict__.update(initial.__dict__)
+        self.patrol_round = 0
+        self.patrol_members = {r.id for r in self.robots if r.mission == "patrol"}
+        self.patrol_completed.clear()
         self.fires.clear()
         self.fire_history.clear()
         self.fire_counter = 0
@@ -606,19 +618,7 @@ class SimEngine(QObject):
                 self._next_fire_in = self.rng.randint(18, 32)
                 self.ignite_random_fire(auto_notify=True)
 
-        # 保持两架无人机巡逻；每架完成全部航带后才可被调度。
-        patrol_uavs = [r for r in self.robots if r.kind == "UAV" and r.mission == "patrol"]
-        if len(patrol_uavs) < 2:
-            for r in sorted(self.robots, key=lambda unit: not unit.patrol_incomplete):
-                if r.kind == "UAV" and r.mission == "idle" and r.status in ("standby", "on_mission") and r.battery >= ROBOT_LOW_BATTERY and r.temp <= 45.0 and not r.thermal_rest and not r.needs_refill:
-                    r.patrol_incomplete = True
-                    r.mission = "patrol"
-                    r.status = "on_mission"
-                    r.task = f"林区巡逻 · 航带 {r.patrol_index // 2 + 1}/{len(PATROL_WAYPOINTS) // 2}"
-                    self._ensure_robot_route(r)
-                    patrol_uavs.append(r)
-                    if len(patrol_uavs) >= 2:
-                        break
+        self._manage_patrol_rotation()
 
         # 推进机器人移动与灭火作业
         suppression_by_fire: dict[str, float] = {}
@@ -823,6 +823,62 @@ class SimEngine(QObject):
             return None
         return fire
 
+    def _patrol_base_candidate(self, base_index: int) -> Robot | None:
+        _, _, bx, by = BASES[base_index]
+        candidates = [r for r in self.robots if r.kind == "UAV" and r.status == "standby"
+                      and r.mission == "idle" and not r.assigned_fire_id and not r.patrol_incomplete
+                      and not r.thermal_rest and not r.needs_refill and r.battery >= ROBOT_LOW_BATTERY
+                      and r.temp <= 45 and math.hypot(r.x - bx, r.y - by) < 1e-6
+                      and (r.home_x, r.home_y) == (bx, by)]
+        return max(candidates, key=lambda r: (r.battery, r.id), default=None)
+
+    def _start_patrol(self, r: Robot) -> None:
+        r.patrol_incomplete = True
+        r.mission, r.status = "patrol", "on_mission"
+        r.task = (f"林区巡逻 · 航带 {r.patrol_index // 2 + 1}/{len(PATROL_WAYPOINTS) // 2}"
+                  if r.patrol_index < len(PATROL_WAYPOINTS) else "林区巡逻 · 补扫")
+        self._ensure_robot_route(r)
+
+    def _manage_patrol_rotation(self) -> None:
+        """一轮两架；整轮完成后按北山/东坡、西林/南谷交替。"""
+        if self.patrol_members and self.patrol_completed == self.patrol_members:
+            self.patrol_round += 1
+            self.patrol_members.clear()
+            self.patrol_completed.clear()
+        if not self.patrol_members:
+            indexes = (0, 2) if self.patrol_round % 2 == 0 else (1, 3)
+            pair = [self._patrol_base_candidate(i) for i in indexes]
+            if any(r is None for r in pair):
+                return  # 目标基地无人可用时等待，不跨基地冒充轮岗
+            self.patrol_members = {r.id for r in pair}
+            for r in pair:
+                self._start_patrol(r)
+            names = "、".join(BASES[i][1] for i in indexes)
+            self.push_event(f"巡逻轮岗：{names} 各派一架无人机开始新一轮", "info")
+            return
+        # 未完成的成员休整后续巡；离线时由同基地设备接替已覆盖进度。
+        for robot_id in tuple(self.patrol_members - self.patrol_completed):
+            r = next(r for r in self.robots if r.id == robot_id)
+            if r.status == "offline":
+                base_index = next(i for i, base in enumerate(BASES)
+                                  if (r.home_x, r.home_y) == (base[2], base[3]))
+                replacement = self._patrol_base_candidate(base_index)
+                if replacement is None:
+                    continue
+                replacement.patrol_index = r.patrol_index
+                replacement.patrol_gap = r.patrol_gap
+                replacement.patrol_seen = set(r.patrol_seen)
+                r.patrol_incomplete = False
+                r.patrol_index, r.patrol_gap = 0, None
+                r.patrol_seen.clear()
+                self.patrol_members.remove(r.id)
+                self.patrol_members.add(replacement.id)
+                self._start_patrol(replacement)
+                self.push_event(f"{replacement.id} 接替离线的 {r.id} 继续本轮巡逻", "warning")
+            elif (r.status == "standby" and r.mission == "idle" and not r.thermal_rest
+                  and not r.needs_refill and r.battery >= ROBOT_LOW_BATTERY and r.temp <= 45):
+                self._start_patrol(r)
+
     def configure_robot_route(self, robot_id: str, algo: str, wind: float,
                               wind_speed: float, slope: float) -> None:
         """导航页设置单个设备；自动任务只能使用该设备保存的设置。"""
@@ -840,7 +896,10 @@ class SimEngine(QObject):
         if r.status != "on_mission":
             return None
         if r.mission == "patrol":
-            return PATROL_WAYPOINTS[r.patrol_index % len(PATROL_WAYPOINTS)]
+            if r.patrol_index >= len(PATROL_WAYPOINTS):
+                return r.patrol_gap
+            waypoints = PATROL_WAYPOINTS if r.home_x < 0.5 else tuple(reversed(PATROL_WAYPOINTS))
+            return waypoints[r.patrol_index]
         if r.mission in ("recon", "en_route"):
             return (r.target_x, r.target_y)
         return None
@@ -853,8 +912,13 @@ class SimEngine(QObject):
         if r.route_goal == goal:
             return
         fire = next((f for f in self.fires if f.id == r.assigned_fire_id and f.state != "extinguished"), None)
-        plan = self.planner.plan((r.x, r.y), goal, r.route_wind, r.route_wind_speed,
-                                 r.route_slope, fire.origin if fire else self.fire_origin, r.route_algo)
+        # 没有活跃火点时不应依据历史火点位置绕行。
+        if fire is None:
+            active = [f for f in self.fires if f.state != "extinguished"]
+            fire = min(active, key=lambda f: math.hypot(f.origin[0] - r.x, f.origin[1] - r.y), default=None)
+        planner = self.air_planner if r.kind == "UAV" else self.planner
+        plan = planner.plan((r.x, r.y), goal, r.route_wind, r.route_wind_speed,
+                            r.route_slope, fire.origin if fire else (-10.0, -10.0), r.route_algo)
         r.route_plan, r.route = plan, list(plan.path)
         r.route_index, r.route_goal = 1, goal
         r.route_failed = not bool(plan.path)
@@ -865,6 +929,23 @@ class SimEngine(QObject):
         if not r.route or r.route_failed or self._robot_goal(r) != r.route_goal:
             return []
         return [(r.x, r.y)] + r.route[r.route_index:]
+
+    def _record_patrol_coverage(self, r: Robot, start, end) -> None:
+        """用仿真传感器视幅记录沿实际移动轨迹覆盖的栅格。"""
+        distance = math.dist(start, end)
+        samples = max(1, math.ceil(distance / .025))
+        for i in range(samples + 1):
+            t = i / samples
+            px = start[0] + (end[0] - start[0]) * t
+            py = start[1] + (end[1] - start[1]) * t
+            xmin = max(0, int((px - PATROL_SENSOR_RADIUS) * GRID_W))
+            xmax = min(GRID_W - 1, int((px + PATROL_SENSOR_RADIUS) * GRID_W))
+            ymin = max(0, int((py - PATROL_SENSOR_RADIUS) * GRID_H))
+            ymax = min(GRID_H - 1, int((py + PATROL_SENSOR_RADIUS) * GRID_H))
+            for y in range(ymin, ymax + 1):
+                for x in range(xmin, xmax + 1):
+                    if math.hypot((x + .5) / GRID_W - px, (y + .5) / GRID_H - py) <= PATROL_SENSOR_RADIUS:
+                        r.patrol_seen.add((x, y))
 
     def _follow_robot_route(self, r: Robot, step: float) -> bool:
         self._ensure_robot_route(r)
@@ -881,8 +962,11 @@ class SimEngine(QObject):
                 r.heading = math.atan2(dy, dx)
             travel = min(dist, remaining)
             if dist > 1e-9:
+                start = (r.x, r.y)
                 r.x += dx / dist * travel
                 r.y += dy / dist * travel
+                if r.mission == "patrol":
+                    self._record_patrol_coverage(r, start, (r.x, r.y))
             remaining -= travel
             if dist <= travel + 1e-9:
                 r.x, r.y = x, y
@@ -899,16 +983,27 @@ class SimEngine(QObject):
         if self.estop or r.status not in ("on_mission", "returning"):
             return
         if r.mission == "patrol":
-            if self._follow_robot_route(r, 0.014):
+            if self._follow_robot_route(r, 0.06):
                 r.patrol_index += 1
                 r.route_goal = None
                 if r.patrol_index >= len(PATROL_WAYPOINTS):
-                    r.patrol_index = 0
-                    r.patrol_incomplete = False
-                    r.mission, r.status = "idle", "standby"
-                    r.task = "巡逻一轮完成 · 待命"
-                    self._ensure_robot_route(r)
-                    self.push_event(f"{r.id} 完成一轮扫描航带，现可参与调度", "success")
+                    uncovered = [(x, y) for y in range(GRID_H) for x in range(GRID_W)
+                                 if (x, y) not in r.patrol_seen]
+                    if uncovered:
+                        x, y = min(uncovered, key=lambda cell: math.hypot(
+                            (cell[0] + .5) / GRID_W - r.x, (cell[1] + .5) / GRID_H - r.y))
+                        r.patrol_gap = ((x + .5) / GRID_W, (y + .5) / GRID_H)
+                        r.task = f"林区巡逻 · 补扫 {len(uncovered)} 个栅格"
+                        self._ensure_robot_route(r)
+                    else:
+                        r.patrol_index = 0
+                        r.patrol_incomplete = False
+                        r.patrol_gap = None
+                        r.patrol_seen.clear()
+                        self.patrol_completed.add(r.id)
+                        self._assign_nearest_base(r)
+                        r.task = "巡逻一轮完成 · 返回基地"
+                        self.push_event(f"{r.id} 完成一轮扫描航带，返回基地休整", "success")
                 else:
                     r.task = f"林区巡逻 · 航带 {r.patrol_index // 2 + 1}/{len(PATROL_WAYPOINTS) // 2}"
                     self._ensure_robot_route(r)

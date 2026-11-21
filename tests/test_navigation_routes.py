@@ -49,7 +49,7 @@ class NavigationRouteTests(unittest.TestCase):
 
     def test_unreachable_goal_stops_instead_of_straight_line(self):
         e = self.e
-        r = e.robots[0]
+        r = next(robot for robot in e.robots if robot.kind == "UGV")
         fire = e.ignite_random_fire((.25, .25))
         r.assigned_fire_id = fire.id
         r.status, r.mission = "on_mission", "en_route"
