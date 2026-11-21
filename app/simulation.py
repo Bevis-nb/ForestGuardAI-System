@@ -478,6 +478,8 @@ class SimEngine(QObject):
         self.patrol_completed: set[str] = set()
         self.alerts: list[dict] = []
         self.events: list[dict] = []
+        self.collaboration_events: list[dict] = []
+        self._collaboration_shortages: dict[str, tuple[int, int]] = {}
         self.tasks = self._make_tasks()
         self.temp_history = [26.1, 26.6, 27.2, 27.0, 27.8, 28.1, 28.4]
         self.risk_history = [54, 58, 63, 68, 72, 78, 82]
@@ -510,6 +512,8 @@ class SimEngine(QObject):
         self._th_state.clear()
         self.alerts.clear()
         self.events.clear()
+        self.collaboration_events.clear()
+        self._collaboration_shortages.clear()
         self.paused = False
         self.estop = False
         self.auto_ignite_enabled = False
@@ -667,6 +671,11 @@ class SimEngine(QObject):
                     r.payload = round(100.0 * r.water_l / max(1.0, r.water_cap), 1)
                     f_obj.water_used_l += used
                 if r.water_l <= 1e-6 and r.status == "on_mission":
+                    fire_id = r.assigned_fire_id
+                    if fire_id:
+                        self._pending_handoffs.append({"fire_id": fire_id, "kind": r.kind, "task": r.task,
+                                                       "tx": r.target_x, "ty": r.target_y, "from_id": r.id})
+                    self.log_collaboration("退出", "水量耗尽，返回基地补给；系统自动补派", fire_id, (r.id,), "warning")
                     r.spraying = False
                     r.assigned_fire_id = ""
                     r.needs_refill = True
@@ -714,7 +723,10 @@ class SimEngine(QObject):
                     f"耗时 {duration}s · 峰值过火 {f.peak_area:.1f} ha · 耗水 {f.water_used_l:.0f} L",
                     "success", "灭火捷报",
                 )
-                self.push_event(f"火点 {f.id} 明火已扑灭，相关装备自动返回就近空闲基地", "success")
+                units = tuple(r.id for r in self.robots if r.assigned_fire_id == f.id)
+                self.log_collaboration("扑灭", "火点扑灭，参与装备返回所属基地", f.id, units, "success")
+                self._collaboration_shortages.pop(f.id, None)
+                self.push_event(f"火点 {f.id} 明火已扑灭，相关装备自动返回所属基地", "success")
                 for r in self.robots:
                     if r.assigned_fire_id == f.id:
                         r.spraying = False
@@ -809,6 +821,7 @@ class SimEngine(QObject):
         self._assign_nearest_base(r)
         reason = "机身过温 / 电量过低" if hot and low_battery else ("机身过温" if hot else "电量过低")
         r.task = f"{reason} · 返回基地休整"
+        self.log_collaboration("退出", f"{reason}，停止任务并返回基地" + ("；系统自动补派" if fire_id else ""), fire_id, (r.id,), "warning")
         self.push_event(f"{r.id} {reason}（{r.temp:.1f}℃ / {r.battery:.1f}%），返基地休整"
                         + (f"，系统将为火点 {fire_id} 补派装备" if fire_id else ""), "warning")
 
@@ -854,6 +867,7 @@ class SimEngine(QObject):
             for r in pair:
                 self._start_patrol(r)
             names = "、".join(BASES[i][1] for i in indexes)
+            self.log_collaboration("巡逻轮岗", f"{names} 各派一架无人机开始新一轮", "", tuple(r.id for r in pair))
             self.push_event(f"巡逻轮岗：{names} 各派一架无人机开始新一轮", "info")
             return
         # 未完成的成员休整后续巡；离线时由同基地设备接替已覆盖进度。
@@ -874,6 +888,7 @@ class SimEngine(QObject):
                 self.patrol_members.remove(r.id)
                 self.patrol_members.add(replacement.id)
                 self._start_patrol(replacement)
+                self.log_collaboration("巡逻接替", "同基地设备接替离线巡逻机并继承进度", "", (r.id, replacement.id), "warning")
                 self.push_event(f"{replacement.id} 接替离线的 {r.id} 继续本轮巡逻", "warning")
             elif (r.status == "standby" and r.mission == "idle" and not r.thermal_rest
                   and not r.needs_refill and r.battery >= ROBOT_LOW_BATTERY and r.temp <= 45):
@@ -1017,6 +1032,7 @@ class SimEngine(QObject):
                     recon_fire.state = "spreading"
                     self.push_alert(f"无人机 {r.id} 现场勘察确认：火点 {recon_fire.id} 属实！",
                                     "热成像发现异常热源，启动自动调度", "critical", f"{r.id} 空中侦察")
+                    self.log_collaboration("确认", "侦察确认火点，启动空地自动调度", recon_fire.id, (r.id,), "warning")
                     self.push_event(f"{r.id} 抵近勘察确认火点 {recon_fire.id} 属实，启动自动调度", "warning")
                     r.assigned_fire_id = ""
                     r.status = "standby"
@@ -1044,6 +1060,7 @@ class SimEngine(QObject):
                 r.arrived = True
                 r.mission = "spraying"
                 r.spraying = True
+                self.log_collaboration("到场", f"抵达作业点，执行{r.task}", fire.id, (r.id,), "success")
                 self._ensure_robot_route(r)
                 r.heading = math.atan2(fire.origin[1] - r.y, fire.origin[0] - r.x)
             return
@@ -1087,6 +1104,7 @@ class SimEngine(QObject):
         self.last_report = None
         self.replan()
 
+        self.log_collaboration("发现", "发现可疑火点，等待无人机核查", fid, (), "warning")
         scout = self._dispatch_scout(self.fire)
         detail = (f"已指派 {scout.id} 前往勘察" if scout else "暂无可用无人机，系统将自动重试")
         self.push_alert(
@@ -1104,7 +1122,12 @@ class SimEngine(QObject):
                 and r.mission == "idle" and not r.patrol_incomplete and not r.assigned_fire_id and r.battery >= ROBOT_LOW_BATTERY
                 and r.temp <= ROBOT_OVERHEAT_TEMP and not r.thermal_rest and not r.needs_refill]
         if not uavs:
+            missing = (1, 0)
+            if self._collaboration_shortages.get(fire.id) != missing:
+                self.log_collaboration("等待侦察", "暂无可用无人机，系统持续重试", fire.id, (), "warning")
+                self._collaboration_shortages[fire.id] = missing
             return None
+        self._collaboration_shortages.pop(fire.id, None)
         scout = min(uavs, key=lambda r: math.hypot(r.x - fire.origin[0], r.y - fire.origin[1]))
         scout.status = "on_mission"
         scout.mission = "recon"
@@ -1113,6 +1136,7 @@ class SimEngine(QObject):
         scout.assigned_fire_id = fire.id
         scout.spraying = False
         self._ensure_robot_route(scout)
+        self.log_collaboration("侦察", "无人机前往可疑火点核查", fire.id, (scout.id,))
         self.push_event(f"预警：{scout.id} 正在飞往可疑火点 {fire.id} 进行现场核查…", "info")
         return scout
 
@@ -1197,6 +1221,8 @@ class SimEngine(QObject):
             r.arrived = False
             r.spraying = False
             self._ensure_robot_route(r)
+            self.log_collaboration("派遣", f"{p['task']} · {p['reason']}" + (" · 路径不可达" if r.route_failed else ""),
+                                   target_id, (r.id,), "warning" if r.route_failed else "info")
             chosen.append(p)
         self.dispatch_plan = chosen
         if chosen:
@@ -1239,6 +1265,7 @@ class SimEngine(QObject):
             f"热成像定位 ({origin[0]:.2f}, {origin[1]:.2f}) · 初始强度 {intensity:.0f}% · 面积 {area:.1f} ha",
             "critical", "火灾预警系统",
         )
+        self.log_collaboration("发现", "发现火点，开始自动空地协作", fid, (), "warning")
         self.push_event(f"火点 {fid} 触发警报，正在自动调度装备", "warning")
         if self.auto_dispatch and not self.estop:
             self._ensure_dispatch(fid)
@@ -1261,6 +1288,7 @@ class SimEngine(QObject):
         needs = {"UAV": max(0, 2 - sum(r.kind == "UAV" for r in assigned)),
                  "UGV": max(0, 3 - sum(r.kind == "UGV" for r in assigned))}
         if not any(needs.values()):
+            self._collaboration_shortages.pop(fire_id, None)
             return []
         plan = self.recommend_dispatch(fire_id, store=False)
         selected = []
@@ -1282,10 +1310,22 @@ class SimEngine(QObject):
                 selected.append(item)
                 needs[item["kind"]] -= 1
         chosen = self.confirm_dispatch(fire_id=fire_id, plan=selected) if selected else []
+        assigned_now = [r for r in self.robots if r.assigned_fire_id == fire_id
+                        and r.status == "on_mission" and r.mission in ("en_route", "spraying")]
+        missing = (max(0, 2 - sum(r.kind == "UAV" for r in assigned_now)),
+                   max(0, 3 - sum(r.kind == "UGV" for r in assigned_now)))
+        if any(missing) and self._collaboration_shortages.get(fire_id) != missing:
+            self.log_collaboration("等待补派", f"尚缺无人机 {missing[0]} 台、地面机器人 {missing[1]} 台；系统持续重试",
+                                   fire_id, (), "warning")
+            self._collaboration_shortages[fire_id] = missing
+        elif not any(missing):
+            self._collaboration_shortages.pop(fire_id, None)
         chosen_ids = {item["robot_id"] for item in chosen}
         for handoff, replacement_id in handoffs:
             if replacement_id in chosen_ids:
                 self._pending_handoffs.remove(handoff)
+                self.log_collaboration("接替", f"接替任务：{handoff['task']}", fire_id,
+                                       (handoff['from_id'], replacement_id), "success")
                 self.push_event(f"{replacement_id} 接替 {handoff['from_id']} 执行火点 {fire_id} 的「{handoff['task']}」", "success")
         return chosen
 
@@ -1294,6 +1334,15 @@ class SimEngine(QObject):
         return self._ensure_dispatch(self.fire.id)
 
     # ---------------- 业务动作 ----------------
+    def log_collaboration(self, kind: str, text: str, fire_id: str = "",
+                          robots: tuple[str, ...] = (), level: str = "info") -> None:
+        """记录真实发生的协同状态变化；仅保存在本次演练内。"""
+        event = {"time": datetime.now().strftime("%H:%M:%S"), "sim_time": self.sim_time,
+                 "kind": kind, "text": text, "fire_id": fire_id,
+                 "robots": tuple(robots), "level": level}
+        self.collaboration_events.insert(0, event)
+        del self.collaboration_events[200:]
+
     def push_event(self, text: str, level: str = "info") -> None:
         ev = {"time": datetime.now().strftime("%H:%M:%S"), "level": level, "text": text}
         self.events = ([ev] + self.events)[:40]
