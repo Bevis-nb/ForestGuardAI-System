@@ -55,6 +55,7 @@ class TerrainMap(QWidget):
 
     clicked_map = Signal(float, float)
     hovered = Signal(str)
+    robot_selected = Signal(str)
 
     def __init__(self, engine: SimEngine, mode: str = "overview", parent=None,
                  show_legend: bool = True):
