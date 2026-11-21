@@ -1327,7 +1327,7 @@ class VideoFeed(QWidget):
             p.drawText(QRectF(w - 96, h - 52, 70, 14), Qt.AlignmentFlag.AlignRight, "ZOOM ×1.0")
 
         # 目标框
-        if self.show_boxes:
+        if self.show_boxes and any(f.state != "extinguished" for f in self.engine.fires):
             fire = (0.44, 0.46, 0.40, 0.34)
             smoke = (0.52, 0.15, 0.40, 0.28)
             p.setFont(_font(8.5, 700))

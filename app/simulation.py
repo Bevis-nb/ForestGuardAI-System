@@ -363,8 +363,8 @@ class SimEngine(QObject):
         self._th_state: dict[str, bool] = {}
         self.slope = 0.34
         self.risk = 82.0
-        self.fire_area = 12.8
-        self.containment = 18.0
+        self.fire_area = 0.0
+        self.containment = 100.0
         self.fire_confidence = 96.0
         self.fire_origin = (0.655, 0.545)
         # --- 灭火演示：火情状态机 / 调度 / 速度 ---
@@ -390,17 +390,41 @@ class SimEngine(QObject):
         self.baseline = self.planner.plan((0.16, 0.78), (0.52, 0.62), self.wind_deg,
                                           self.wind_speed, self.slope, self.fire_origin, algo="A*")
         self.robots = self._make_robots()
-        self.alerts = self._make_alerts()
-        self.events = self._make_events()
+        self.alerts: list[dict] = []
+        self.events: list[dict] = []
         self.tasks = self._make_tasks()
         self.temp_history = [26.1, 26.6, 27.2, 27.0, 27.8, 28.1, 28.4]
         self.risk_history = [54, 58, 63, 68, 72, 78, 82]
         self.containment_history = [4, 6, 8, 11, 14, 16, 18]
-        self.evaluate_and_dispatch()
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self._on_tick)
         self.timer.start()
+
+    def reset_session(self) -> None:
+        """开始新的演练：就地重置装备，保留 UI 持有的 Robot 对象引用。"""
+        for robot, initial in zip(self.robots, self._make_robots()):
+            robot.__dict__.update(initial.__dict__)
+        self.fires.clear()
+        self.fire_history.clear()
+        self.fire_counter = 0
+        self.fire = FireIncident(id="A-00", intensity=0.0, area=0.0,
+                                 containment=100.0, state="extinguished")
+        self.fire_area = 0.0
+        self.containment = 100.0
+        self.fire_origin = (0.655, 0.545)
+        self.sim_time = 0.0
+        self.dispatch_plan = []
+        self.last_report = None
+        self._milestones.clear()
+        self._th_state.clear()
+        self.alerts.clear()
+        self.events.clear()
+        self.paused = False
+        self.estop = False
+        self.auto_ignite_enabled = False
+        self._next_fire_in = 1
+        self.tick.emit()
 
     # ---------------- 初始化数据 ----------------
     def _make_robots(self) -> list[Robot]:
@@ -1023,6 +1047,8 @@ class SimEngine(QObject):
         return "低风险", "success"
 
     def vision_scores(self) -> tuple[float, float, float]:
+        if not any(f.state != "extinguished" for f in self.fires):
+            return 0.0, 0.0, 100.0
         fire = min(99.4, self.fire_confidence + math.sin(self.started_at.second / 4) * 1.2)
         smoke = min(99.0, 88.0 + math.cos(self.started_at.second / 5) * 2.4)
         normal = max(0.6, 100 - fire - smoke * 0.18)

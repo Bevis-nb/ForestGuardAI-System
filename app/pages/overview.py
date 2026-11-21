@@ -81,8 +81,10 @@ class OverviewPage(ScrollPage):
         map_panel.add(self.map, 1)
         foot = QHBoxLayout()
         foot.setSpacing(8)
-        foot.addWidget(kv_chip("target", "火点 A-03 · 北纬 29°42′ 东经 106°18′"))
-        foot.addWidget(kv_chip("users", "8 台装备在线 · 空地协同"))
+        self.fire_chip = kv_chip("target", "暂无活跃火点")
+        self.fleet_chip = kv_chip("users", "装备在线")
+        foot.addWidget(self.fire_chip)
+        foot.addWidget(self.fleet_chip)
         foot.addStretch(1)
         self.map_status = label("● 链路稳定", None, color=theme.ACCENT, size=11, weight=700)
         foot.addWidget(self.map_status)
@@ -205,6 +207,9 @@ class OverviewPage(ScrollPage):
 
     def _refresh(self):
         e = self.engine
+        active_fires = [f for f in e.fires if f.state != "extinguished"]
+        self.fire_chip.set_text(f"活跃火点 {len(active_fires)} 处" if active_fires else "暂无活跃火点")
+        self.fleet_chip.set_text(f"{sum(r.status != 'offline' for r in e.robots)} 台装备在线 · 空地协同")
         self.stat_fire.set_value(f"{e.fire_area:.1f}")
         self.stat_risk.set_value(f"{e.risk:.0f}")
         self.gauge.set_target(e.risk, theme.RED if e.risk >= 80 else theme.AMBER)
@@ -217,18 +222,17 @@ class OverviewPage(ScrollPage):
             "spreading": ("火势蔓延", "critical"),
             "suppressing": ("扑救压制中", "warning"),
             "contained": ("火势已控", "info"),
-            "extinguished": ("已扑灭 ✓", "success"),
+            "extinguished": ("无火情" if not active_fires else "已扑灭 ✓", "success"),
         }
         st_txt, st_kind = st_map.get(e.fire.state, ("监控中", "info"))
-        self.fire_pill.set_text(f"{e.fire.id} {st_txt}")
+        self.fire_pill.set_text(f"{e.fire.id} {st_txt}" if active_fires else "无火情")
         self.fire_pill.set_kind(st_kind)
         fire, smoke, normal = e.vision_scores()
         self.fire_bar.set_value(fire)
         self.smoke_bar.set_value(smoke)
         self.normal_bar.set_value(normal)
         self.events.set_events(e.events)
-        if not self.fleet_rows.count():
-            self._refresh_robot_rows()
+        self._refresh_robot_rows()
 
     # ------------------------------------------------------------------
     def _trigger_suspicious(self):

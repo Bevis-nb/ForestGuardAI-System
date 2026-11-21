@@ -405,6 +405,7 @@ class MainWindow(QMainWindow):
 
         self._cfg = config.load()
         self.engine = SimEngine()
+        self.engine.timer.stop()  # 登录前装备停在基地，仿真不推进
         # 使用实际时间计时，不受仿真倍速或刷新频率影响。
         self._auto_ignite_delay = QTimer(self)
         self._auto_ignite_delay.setSingleShot(True)
@@ -477,6 +478,10 @@ class MainWindow(QMainWindow):
         self.engine.auto_ignite_enabled = True
 
     def on_login(self, user: str):
+        self.engine.timer.stop()
+        self.engine.reset_session()
+        self.dashboard.pages["overview"]._refresh_alerts()
+        self.engine.timer.start()
         self.engine.auto_ignite_enabled = False
         self._auto_ignite_delay.start(10_000)
         self.user = user
@@ -489,6 +494,7 @@ class MainWindow(QMainWindow):
     def logout(self):
         self._auto_ignite_delay.stop()
         self.engine.auto_ignite_enabled = False
+        self.engine.timer.stop()
         self.stack.setCurrentWidget(self.login)
         self.login.login_btn.setText("进入指挥中心")
         self.login.login_btn.setEnabled(True)

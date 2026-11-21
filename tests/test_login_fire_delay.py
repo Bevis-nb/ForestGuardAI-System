@@ -40,6 +40,36 @@ class LoginFireDelayTests(unittest.TestCase):
         engine._on_tick()
         self.assertTrue(engine.fires)
 
+    def test_login_starts_at_bases_then_only_patrols_leave(self):
+        engine = self.window.engine
+        self.assertFalse(engine.timer.isActive())
+        self.assertTrue(all((r.x, r.y) == (r.home_x, r.home_y) for r in engine.robots))
+        self.window.on_login("admin")
+        engine.timer.stop()
+        patrols = [r for r in engine.robots if r.mission == "patrol"]
+        self.assertEqual(len(patrols), 2)
+        self.assertTrue(all((r.x, r.y) == (r.home_x, r.home_y) for r in engine.robots))
+        self.assertFalse(engine.dispatch_plan)
+        engine._on_tick()
+        self.assertTrue(all((r.x, r.y) != (r.home_x, r.home_y) for r in patrols))
+        self.assertTrue(all((r.x, r.y) == (r.home_x, r.home_y)
+                            for r in engine.robots if r.mission != "patrol"))
+        self.assertFalse(engine.fires)
+
+    def test_relogin_resets_robots_and_fire(self):
+        self.window.on_login("admin")
+        engine = self.window.engine
+        engine.timer.stop()
+        original = engine.robots[0]
+        engine.ignite_random_fire((0.4, 0.4))
+        engine.robots[0].x = 0.5
+        self.window.logout()
+        self.window.on_login("admin")
+        engine.timer.stop()
+        self.assertIs(engine.robots[0], original)
+        self.assertEqual(engine.fires, [])
+        self.assertTrue(all((r.x, r.y) == (r.home_x, r.home_y) for r in engine.robots))
+
     def test_logout_cancels_and_login_restarts_delay(self):
         self.window.on_login("admin")
         self.window.logout()
