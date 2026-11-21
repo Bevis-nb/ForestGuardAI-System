@@ -332,29 +332,28 @@ class TerrainMap(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         p.drawImage(r, img)
 
-        # 隔离带示意
-        iso = QPainterPath(QPointF(r.left() + r.width() * 0.60, r.top() + r.height() * 0.30))
-        iso.cubicTo(
-            r.left() + r.width() * 0.68, r.top() + r.height() * 0.42,
-            r.left() + r.width() * 0.66, r.top() + r.height() * 0.62,
-            r.left() + r.width() * 0.74, r.top() + r.height() * 0.78,
-        )
-        p.setPen(QPen(C("#FFFFFF"), 6))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(iso)
-        pen = QPen(C(theme.AMBER), 3)
-        pen.setStyle(Qt.PenStyle.DashLine)
-        pen.setDashPattern([4, 4])
-        p.setPen(pen)
-        p.drawPath(iso)
-        p.setFont(_font(9, 700))
-        tw = p.fontMetrics().horizontalAdvance("建议隔离带") + 16
-        box = QRectF(r.left() + r.width() * 0.705, r.top() + r.height() * 0.815, tw, 19)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, 230))
-        p.drawRoundedRect(box, 9, 9)
-        p.setPen(C(theme.AMBER))
-        p.drawText(box, Qt.AlignmentFlag.AlignCenter, "建议隔离带")
+        # 每个活跃火点各自生成一条下风向建议隔离带
+        fires = [f for f in getattr(self.engine, "fires", []) if not f.extinguished]
+        if not fires and hasattr(self.engine, "fire"):
+            fires = [self.engine.fire]
+        for f in fires:
+            fx, fy = f.origin
+            rad = math.radians(self.engine.wind_deg)
+            dx, dy = math.cos(rad) * 0.08, math.sin(rad) * 0.08
+            px, py = -math.sin(rad) * 0.10, math.cos(rad) * 0.10
+            p1 = QPointF(r.left() + r.width() * (fx + dx - px), r.top() + r.height() * (fy + dy - py))
+            p2 = QPointF(r.left() + r.width() * (fx + dx * 1.2), r.top() + r.height() * (fy + dy * 1.2))
+            p3 = QPointF(r.left() + r.width() * (fx + dx + px), r.top() + r.height() * (fy + dy + py))
+            iso = QPainterPath(p1)
+            iso.quadTo(p2, p3)
+            p.setPen(QPen(C("#FFFFFF"), 6))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(iso)
+            pen = QPen(C(theme.AMBER), 3)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            pen.setDashPattern([4, 4])
+            p.setPen(pen)
+            p.drawPath(iso)
         p.setPen(Qt.PenStyle.NoPen)
 
     def highlight_fire(self):
@@ -554,15 +553,15 @@ class TerrainMap(QWidget):
 
             is_docked = robot.mission == "idle" and robot.status in ("standby", "charging")
             if is_docked:
-                # 在基地内以较小圆点环绕排列，避免重叠
+                # 在基地内以 2x4 小圆点网格排列，确保 8 台装备全部可见且不重叠
                 docked_list = [
                     rb.id for rb in self.engine.robots
                     if rb.mission == "idle" and rb.status in ("standby", "charging")
                     and abs(rb.x - robot.x) < 0.08 and abs(rb.y - robot.y) < 0.08
                 ]
                 idx = docked_list.index(robot.id) if robot.id in docked_list else 0
-                ang = (idx / max(1, len(docked_list))) * 2 * math.pi
-                pos = QPointF(pos.x() + math.cos(ang) * 16, pos.y() + math.sin(ang) * 16)
+                col, row = idx % 4, idx // 4
+                pos = QPointF(pos.x() + (col - 1.5) * 11, pos.y() + (row - 0.5) * 11 - 14)
             self._draw_badge(p, pos, "drone" if robot.kind == "UAV" else "robot",
                              color, "",
                              highlight=robot.id == self.selected_robot,
