@@ -339,9 +339,11 @@ class SimEngine(QObject):
         self.fire_confidence = 96.0
         self.fire_origin = (0.655, 0.545)
         # --- 灭火演示：火情状态机 / 调度 / 速度 ---
-        self.fire = FireIncident()
+        self.fires: list[FireIncident] = []
+        self._next_fire_in = 6
+        self.fire = FireIncident(id="A-00", intensity=0.0, area=0.0, containment=100.0, state="extinguished")
         self.fire_history: list[FireIncident] = []
-        self.fire_counter = 3
+        self.fire_counter = 0
         self.sim_time = 0.0          # 累计仿真秒
         self.sim_speed = 1           # 1 / 2 / 4 倍速
         self.auto_dispatch = True
