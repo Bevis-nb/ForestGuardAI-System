@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from .. import icons, theme
 from ..canvas import CameraView, FirstPerson3DView, VideoFeed
 from ..charts import LineChart
-from ..simulation import BASES, Robot, SimEngine
+from ..simulation import BASES, Robot, SimEngine, robot_health_risk
 from ..widgets import (
     Card,
     IconTile,
@@ -89,17 +89,23 @@ class RobotCard(QFrame):
         lay.addLayout(foot)
 
     def _apply_style(self):
-        if self._selected:
-            self.setStyleSheet(
-                f"#RobotCard {{ background:{theme.ACCENT_SOFT}; border:1.5px solid {theme.ACCENT};"
-                f" border-radius:14px; }}"
-            )
+        risk = robot_health_risk(self.robot)
+        if risk >= 1:
+            background, border = theme.RED_SOFT, theme.RED
+        elif risk > 0:
+            background, border = theme.AMBER_SOFT, theme.AMBER
         else:
-            self.setStyleSheet(
-                f"#RobotCard {{ background:{theme.SURFACE}; border:1px solid {theme.BORDER};"
-                f" border-radius:14px; }}"
-                f"#RobotCard:hover {{ border:1px solid {theme.ACCENT_LIGHT}; }}"
-            )
+            background = theme.ACCENT_SOFT if self._selected else theme.SURFACE
+            border = theme.ACCENT if self._selected else theme.BORDER
+        width = "2px" if self._selected else "1px"
+        self.setStyleSheet(
+            f"#RobotCard {{ background:{background}; border:{width} solid {border};"
+            f" border-radius:14px; }}"
+            f"#RobotCard:hover {{ border:{width} solid {border if risk > 0 else theme.ACCENT_LIGHT}; }}"
+        )
+        self.setToolTip(("严重风险 · " if risk >= 1 else "注意 · " if risk > 0 else "正常 · ")
+                        + f"电量 {self.robot.battery:.0f}% / 温度 {self.robot.temp:.1f}℃"
+                        + (" · 已选中" if self._selected else ""))
 
     def set_selected(self, selected: bool):
         self._selected = selected
@@ -110,12 +116,14 @@ class RobotCard(QFrame):
         self.status.set_text(r.status_text)
         self.status.set_kind(r.status_kind)
         self.task_label.setText(f"任务：{r.task}")
+        self.battery._color = QColor(theme.RED if r.battery <= 20 else theme.AMBER if r.battery < 40 else theme.ACCENT)
         self.battery.set_value(r.battery)
+        self._apply_style()
         self.battery_label.setText(f"电量 {r.battery:.0f}%")
         self.signal_label.setText(f"信号 {r.signal:.0f}%")
         self.temp_label.setText(f"{r.temp:.1f}℃")
         self.temp_label.setStyleSheet(
-            f"color:{theme.RED if r.temp > 42 else theme.MUTED}; font-size:11px;"
+            f"color:{theme.RED if r.temp >= 55 else theme.AMBER if r.temp > 45 else theme.MUTED}; font-size:11px;"
         )
 
     def mousePressEvent(self, event):
@@ -518,6 +526,8 @@ class FleetPage(ScrollPage):
         body.setSpacing(14)
 
         grid = QGridLayout()
+        self.grid = grid
+        self._visible_order = None
         grid.setSpacing(12)
         self.cards: dict[str, RobotCard] = {}
         for i, robot in enumerate(engine.robots):
@@ -608,20 +618,27 @@ class FleetPage(ScrollPage):
 
         self.selected = engine.robots[4].id
         self._select(self.selected)
+        self._filter_by_base()
         engine.tick.connect(self._refresh)
 
     # ------------------------------------------------------------------
     def _filter_by_base(self):
         idx = self.base_filter.currentIndex()
-        if idx == 0:
-            for card in self.cards.values():
-                card.setVisible(True)
+        base = BASES[idx - 1] if idx else None
+        visible = [r for r in self.engine.robots if base is None or
+                   (abs(r.home_x - base[2]) < 0.08 and abs(r.home_y - base[3]) < 0.08)]
+        visible.sort(key=lambda r: (-robot_health_risk(r), r.id))
+        order = tuple(r.id for r in visible)
+        if order == self._visible_order:
             return
-        _bid, _bname, bx, by = BASES[idx - 1]
-        for rid, card in self.cards.items():
-            r = card.robot
-            at_base = abs(r.home_x - bx) < 0.08 and abs(r.home_y - by) < 0.08
-            card.setVisible(at_base)
+        for card in self.cards.values():
+            self.grid.removeWidget(card)
+            card.hide()
+        for i, robot in enumerate(visible):
+            card = self.cards[robot.id]
+            self.grid.addWidget(card, i // 2, i % 2)
+            card.show()
+        self._visible_order = order
 
     def _select(self, robot_id: str):
         self.selected = robot_id
@@ -645,8 +662,14 @@ class FleetPage(ScrollPage):
     def _refresh(self):
         for card in self.cards.values():
             card.update_robot()
+        self._filter_by_base()
         robot = getattr(self, "_robot", None)
         if robot:
+            self.detail_sub.setText(f"{robot.model} · 任务：{robot.task}")
+            self.detail_pill.set_text(robot.status_text)
+            self.detail_pill.set_kind(robot.status_kind)
+            self.kv_task.set_value(robot.task)
+            self.kv_payload.set_value(f"{robot.payload:.0f}%")
             self.g_battery.set_value(robot.battery)
             self.g_temp.set_value(robot.temp)
             self.g_signal.set_value(robot.signal)

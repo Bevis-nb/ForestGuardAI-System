@@ -16,6 +16,9 @@ from datetime import datetime, timedelta
 from PySide6.QtCore import QObject, QTimer, Signal
 
 GRID_W, GRID_H = 64, 40
+# 演示用装备过温与恢复阈值（并非真实设备安全参数）。
+ROBOT_OVERHEAT_TEMP = 55.0
+ROBOT_RECOVERY_TEMP = 35.0
 
 
 # ---------------------------------------------------------------------------
@@ -366,9 +369,14 @@ class Robot:
     eta_status: str = "准时"     # 早到 / 准时 / 晚到
     assigned_fire_id: str = ""
     needs_refill: bool = False
+    thermal_rest: bool = False
 
     @property
     def status_text(self) -> str:
+        if self.thermal_rest and self.status == "returning":
+            return "过温返航"
+        if self.thermal_rest and self.status == "charging":
+            return "冷却休整"
         return {
             "on_mission": "执行任务",
             "standby": "待命",
@@ -386,6 +394,12 @@ class Robot:
             "returning": "purple",
             "offline": "critical",
         }.get(self.status, "info")
+
+
+def robot_health_risk(robot: Robot) -> float:
+    """演示用风险分数：40%电量或45℃开始预警，20%或55℃为严重。"""
+    return max(0.0, (40.0 - robot.battery) / 20.0,
+               (robot.temp - 45.0) / (ROBOT_OVERHEAT_TEMP - 45.0))
 
 
 class SimEngine(QObject):
@@ -430,6 +444,7 @@ class SimEngine(QObject):
         self.sim_speed = 1           # 1 / 2 / 4 倍速
         self.auto_dispatch = True
         self.dispatch_plan: list[dict] = []
+        self._pending_handoffs: list[dict] = []
         self.last_report: dict | None = None
         self._milestones: set[int] = set()
         self._dispatch_timer = 0.0
@@ -467,6 +482,7 @@ class SimEngine(QObject):
         self.fire_origin = (0.655, 0.545)
         self.sim_time = 0.0
         self.dispatch_plan = []
+        self._pending_handoffs.clear()
         self.last_report = None
         self._milestones.clear()
         self._th_state.clear()
@@ -581,12 +597,13 @@ class SimEngine(QObject):
 
         # 保持固定 2 架健康无人机执行全林区覆盖巡逻（100s 全覆盖）
         for r in self.robots:
-            if r.kind == "UAV" and r.mission == "patrol" and (r.temp > 45.0 or r.battery < 25.0):
+            if r.kind == "UAV" and r.mission == "patrol" and r.battery < 25.0:
+                r.needs_refill = True
                 self._assign_nearest_base(r)
         patrol_uavs = [r for r in self.robots if r.kind == "UAV" and r.mission == "patrol"]
         if len(patrol_uavs) < 2:
             for r in self.robots:
-                if r.kind == "UAV" and r.mission == "idle" and r.status != "offline" and r.battery >= 25.0 and r.temp <= 45.0:
+                if r.kind == "UAV" and r.mission == "idle" and r.status in ("standby", "on_mission") and r.battery >= 25.0 and r.temp <= 45.0 and not r.thermal_rest:
                     r.mission = "patrol"
                     r.status = "on_mission"
                     r.task = "全林区覆盖巡逻"
@@ -600,6 +617,8 @@ class SimEngine(QObject):
         for r in self.robots:
             if r.status == "offline":
                 continue
+            if r.status in ("on_mission", "standby") and r.temp >= ROBOT_OVERHEAT_TEMP:
+                self._return_for_cooling(r)
             near_fire = any(math.hypot(r.x - f.origin[0], r.y - f.origin[1]) < 0.14 for f in active_fires_now)
             if near_fire and r.status == "on_mission":
                 r.temp = min(68.0, r.temp + self.rng.uniform(1.5, 2.8))
@@ -608,19 +627,24 @@ class SimEngine(QObject):
             else:
                 r.temp = max(25.0, r.temp - 1.2)
 
+            if r.status in ("on_mission", "standby") and r.temp >= ROBOT_OVERHEAT_TEMP:
+                self._return_for_cooling(r)
+            r.history = (r.history + [r.temp])[-14:]
             if r.status == "on_mission":
                 r.battery = max(6.0, r.battery - self.rng.uniform(0.04, 0.12))
                 r.speed = max(0.2, min(6.0, r.speed + self.rng.uniform(-0.15, 0.15)))
-                r.history = (r.history + [r.temp])[-14:]
             elif r.status == "charging":
                 r.battery = min(100.0, r.battery + 0.45)
                 r.water_l = min(r.water_cap, r.water_l + 6.0)
                 r.payload = round(100.0 * r.water_l / max(1.0, r.water_cap), 1)
-                if r.needs_refill and r.water_l >= r.water_cap and r.battery >= 40:
+                if ((r.needs_refill or r.thermal_rest) and r.water_l >= r.water_cap
+                        and r.battery >= 40 and r.temp <= ROBOT_RECOVERY_TEMP):
                     r.needs_refill = False
+                    r.thermal_rest = False
                     r.status = "standby"
                     r.mission = "idle"
-                    r.task = "补给完成 · 待命"
+                    r.task = "休整补给完成 · 待命"
+                    self.push_event(f"{r.id} 冷却与补给完成，可重新执行任务", "success")
             self._advance_robot(r)
             if r.spraying and not self.estop:
                 f_obj = next((f for f in self.fires if f.id == r.assigned_fire_id
@@ -695,6 +719,8 @@ class SimEngine(QObject):
         ]
 
         still_active = [f for f in self.fires if f.state != "extinguished"]
+        active_ids = {f.id for f in still_active}
+        self._pending_handoffs = [item for item in self._pending_handoffs if item["fire_id"] in active_ids]
         if self.auto_dispatch and not self.estop:
             for fire in still_active:
                 if fire.state == "suspicious":
@@ -745,6 +771,21 @@ class SimEngine(QObject):
         r.mission = "returning"
         r.status = "returning"
         r.task = f"返回{bname}"
+
+    def _return_for_cooling(self, r: Robot) -> None:
+        """过温立即停止作业并释放火点，返所属基地冷却和补给。"""
+        fire_id = r.assigned_fire_id
+        if fire_id and r.mission in ("en_route", "spraying"):
+            self._pending_handoffs.append({"fire_id": fire_id, "kind": r.kind, "task": r.task,
+                                           "tx": r.target_x, "ty": r.target_y, "from_id": r.id})
+        r.assigned_fire_id = ""
+        r.spraying = False
+        r.arrived = False
+        r.thermal_rest = True
+        self._assign_nearest_base(r)
+        r.task = "机身过温 · 返回基地休整"
+        self.push_event(f"{r.id} 机身温度 {r.temp:.1f}℃ 过高，返基地休整"
+                        + (f"，系统将为火点 {fire_id} 补派装备" if fire_id else ""), "warning")
 
     def _advance_robot(self, r: Robot):
         if self.estop or r.status not in ("on_mission", "returning"):
@@ -821,8 +862,8 @@ class SimEngine(QObject):
             else:
                 r.x, r.y = r.home_x, r.home_y
                 r.mission = "idle"
-                r.status = "charging" if r.needs_refill else "standby"
-                r.task = "基地补给中" if r.needs_refill else "待命"
+                r.status = "charging" if r.needs_refill or r.thermal_rest else "standby"
+                r.task = "基地冷却休整中" if r.thermal_rest else ("基地补给中" if r.needs_refill else "待命")
                 r.spraying = False
         else:
             if r.kind == "UAV":
@@ -870,7 +911,8 @@ class SimEngine(QObject):
                for r in self.robots):
             return None
         uavs = [r for r in self.robots if r.kind == "UAV" and r.status in ("standby", "on_mission")
-                and r.mission in ("idle", "patrol") and not r.assigned_fire_id and r.battery >= 18.0]
+                and r.mission in ("idle", "patrol") and not r.assigned_fire_id and r.battery >= 18.0
+                and r.temp < ROBOT_OVERHEAT_TEMP and not r.thermal_rest]
         if not uavs:
             return None
         scout = min(uavs, key=lambda r: math.hypot(r.x - fire.origin[0], r.y - fire.origin[1]))
@@ -894,7 +936,8 @@ class SimEngine(QObject):
         fx, fy = fire.origin
         candidates = [r for r in self.robots if r.status in ("standby", "on_mission")
                       and r.mission in ("idle", "patrol") and not r.assigned_fire_id
-                      and r.battery >= 18.0 and r.water_l > 1.8]
+                      and r.battery >= 18.0 and r.water_l > 1.8
+                      and r.temp < ROBOT_OVERHEAT_TEMP and not r.thermal_rest]
         plan: list[dict] = []
 
         def score_robot(r: Robot, role: str) -> tuple[float, dict]:
@@ -1021,18 +1064,37 @@ class SimEngine(QObject):
     def _ensure_dispatch(self, fire_id: str) -> list[dict]:
         """为火点补足空地编队；无可用装备时后续仿真步自动重试。"""
         assigned = [r for r in self.robots if r.assigned_fire_id == fire_id
-                    and r.mission in ("en_route", "spraying") and r.status != "offline"]
+                    and r.mission in ("en_route", "spraying") and r.status == "on_mission"]
         needs = {"UAV": max(0, 2 - sum(r.kind == "UAV" for r in assigned)),
                  "UGV": max(0, 3 - sum(r.kind == "UGV" for r in assigned))}
         if not any(needs.values()):
             return []
         plan = self.recommend_dispatch(fire_id, store=False)
         selected = []
+        handoffs = []
+        # 优先把过温装备的原任务交给同类型健康装备，避免仅补足数量却遗漏任务。
+        for handoff in self._pending_handoffs:
+            kind = handoff["kind"]
+            if handoff["fire_id"] != fire_id or needs[kind] <= 0:
+                continue
+            replacement = next((p for p in plan if p["kind"] == kind and p not in selected), None)
+            if replacement is None:
+                continue
+            replacement.update(task=handoff["task"], tx=handoff["tx"], ty=handoff["ty"])
+            selected.append(replacement)
+            handoffs.append((handoff, replacement["robot_id"]))
+            needs[kind] -= 1
         for item in plan:
-            if needs[item["kind"]] > 0:
+            if item not in selected and needs[item["kind"]] > 0:
                 selected.append(item)
                 needs[item["kind"]] -= 1
-        return self.confirm_dispatch(fire_id=fire_id, plan=selected) if selected else []
+        chosen = self.confirm_dispatch(fire_id=fire_id, plan=selected) if selected else []
+        chosen_ids = {item["robot_id"] for item in chosen}
+        for handoff, replacement_id in handoffs:
+            if replacement_id in chosen_ids:
+                self._pending_handoffs.remove(handoff)
+                self.push_event(f"{replacement_id} 接替 {handoff['from_id']} 执行火点 {fire_id} 的「{handoff['task']}」", "success")
+        return chosen
 
     def evaluate_and_dispatch(self) -> list[dict]:
         """为当前活跃火点生成并执行自主调度，不影响其他火点的任务。"""
