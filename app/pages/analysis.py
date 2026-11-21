@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QSlider, QVBoxLayout
+from PySide6.QtWidgets import QHBoxLayout, QSlider, QVBoxLayout, QWidget
 
 from .. import theme
 from ..canvas import TerrainMap, VideoFeed
 from ..simulation import SimEngine
-from ..widgets import Pill, ProgressLine, ToggleSwitch, button, label, toast
-from .base import Panel, ScrollPage, hline, kv_chip
+from ..widgets import IconTile, Pill, ProgressLine, ToggleSwitch, label, soft_bg
+from .base import Panel, ScrollPage, kv_chip
 
 
 class AnalysisPage(ScrollPage):
@@ -72,21 +72,62 @@ class AnalysisPage(ScrollPage):
         decision = Panel("灭火策略", "针对选中火点动态生成 · 仅供演示", "shield")
         self.strategy_pill = Pill("无火情", "info")
         decision.add_action(self.strategy_pill)
+
+        # 以不同层级的卡片区分火情摘要、隔离带和行动建议。
+        summary = QWidget()
+        soft_bg(summary, theme.ACCENT_SOFT, 12)
+        summary_lay = QHBoxLayout(summary)
+        summary_lay.setContentsMargins(12, 12, 12, 12)
+        summary_lay.setSpacing(10)
+        summary_lay.addWidget(IconTile("flame", theme.RED, theme.RED_SOFT, 38, 19, 11),
+                              0, Qt.AlignmentFlag.AlignTop)
+        summary_col = QVBoxLayout()
+        summary_col.setSpacing(4)
+        summary_col.addWidget(label("当前分析火点", "caption", color=theme.ACCENT_DARK))
         self.fire_info = label("无火情", None, size=14, weight=700)
         self.fire_info.setWordWrap(True)
-        decision.addWidget(self.fire_info)
-        decision.addWidget(hline())
-        decision.addWidget(label("建议隔离带", "muted"))
+        summary_col.addWidget(self.fire_info)
+        summary_lay.addLayout(summary_col, 1)
+        decision.addWidget(summary)
+
+        isolation = QWidget()
+        soft_bg(isolation, theme.SURFACE_ALT, 12)
+        iso_lay = QVBoxLayout(isolation)
+        iso_lay.setContentsMargins(12, 11, 12, 12)
+        iso_lay.setSpacing(8)
+        iso_head = QHBoxLayout()
+        iso_head.setSpacing(8)
+        iso_head.addWidget(IconTile("route", theme.AMBER, theme.AMBER_SOFT, 30, 15, 9))
+        iso_head.addWidget(label("建议隔离带", None, size=12.5, weight=700), 1)
+        self.iso_direction = Pill("待分析", "info", dot=False)
+        iso_head.addWidget(self.iso_direction)
+        iso_lay.addLayout(iso_head)
         self.iso_text = label("暂无建议", None, color=theme.TEXT_SOFT, size=11.5)
         self.iso_text.setWordWrap(True)
-        decision.addWidget(self.iso_text)
-        decision.addWidget(hline())
-        decision.addWidget(label("处置建议", "muted"))
+        iso_lay.addWidget(self.iso_text)
+        decision.addWidget(isolation)
+
+        action = QWidget()
+        soft_bg(action, theme.SURFACE_ALT, 12)
+        action_lay = QVBoxLayout(action)
+        action_lay.setContentsMargins(12, 11, 12, 12)
+        action_lay.setSpacing(8)
+        action_head = QHBoxLayout()
+        action_head.setSpacing(8)
+        action_head.addWidget(IconTile("shield", theme.BLUE, theme.BLUE_SOFT, 30, 15, 9))
+        action_head.addWidget(label("处置建议", None, size=12.5, weight=700), 1)
+        action_lay.addLayout(action_head)
         self.strategy_text = label("当前没有活跃火点，持续监测林区。", None, color=theme.TEXT_SOFT, size=11.5)
         self.strategy_text.setWordWrap(True)
-        decision.addWidget(self.strategy_text)
-        decision.addWidget(hline())
-        self.force_text = label("暂无已分配装备", "caption")
+        action_lay.addWidget(self.strategy_text)
+        decision.addWidget(action)
+
+        force_head = QHBoxLayout()
+        force_head.setSpacing(7)
+        force_head.addWidget(IconTile("users", theme.ACCENT, theme.ACCENT_SOFT, 30, 15, 9))
+        force_head.addWidget(label("投入力量", None, size=12, weight=700), 1)
+        decision.addLayout(force_head)
+        self.force_text = label("暂无已分配装备", "caption", color=theme.TEXT_SOFT)
         self.force_text.setWordWrap(True)
         decision.addWidget(self.force_text)
         decision.addStretch(1)
@@ -127,6 +168,8 @@ class AnalysisPage(ScrollPage):
             self.strategy_pill.set_text("无火情")
             self.strategy_pill.set_kind("info")
             self.fire_info.setText("无火情")
+            self.iso_direction.set_text("待分析")
+            self.iso_direction.set_kind("info")
             self.iso_text.setText("暂无建议")
             self.strategy_text.setText("当前没有活跃火点，持续监测林区。")
             self.force_text.setText("暂无已分配装备")
@@ -141,6 +184,8 @@ class AnalysisPage(ScrollPage):
         self.strategy_pill.set_text("待勘察" if fire.state == "suspicious" else "模拟建议")
         self.strategy_pill.set_kind("warning")
         self.fire_info.setText(f"{fire.id} · 强度 {fire.intensity:.0f}%\n面积 {fire.area:.1f} ha · 控制率 {fire.containment:.0f}%")
+        self.iso_direction.set_text("下风向")
+        self.iso_direction.set_kind("warning")
         self.iso_text.setText(f"下风向布设，建议宽 {prediction['width_m']} m\n"
                               f"({a[0]:.2f}, {a[1]:.2f}) → ({b[0]:.2f}, {b[1]:.2f})")
         if fire.state == "suspicious":

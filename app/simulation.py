@@ -369,7 +369,8 @@ class SimEngine(QObject):
         self.fire_origin = (0.655, 0.545)
         # --- 灭火演示：火情状态机 / 调度 / 速度 ---
         self.fires: list[FireIncident] = []
-        self._next_fire_in = 6
+        self._next_fire_in = 1
+        self.auto_ignite_enabled = False  # 登录后由主窗口延迟开启
         self.fire = FireIncident(id="A-00", intensity=0.0, area=0.0, containment=100.0, state="extinguished")
         self.fire_history: list[FireIncident] = []
         self.fire_counter = 0
@@ -496,10 +497,11 @@ class SimEngine(QObject):
         self.wind_deg = (self.wind_deg + self.rng.uniform(-1.6, 1.6)) % 360
 
         # 自动随机时间生成火点（支持多火点）
-        self._next_fire_in -= 1
-        if self._next_fire_in <= 0 and len([x for x in self.fires if x.state != "extinguished"]) < 3:
-            self._next_fire_in = self.rng.randint(18, 32)
-            self.ignite_random_fire(auto_notify=True)
+        if self.auto_ignite_enabled:
+            self._next_fire_in -= 1
+            if self._next_fire_in <= 0 and len([x for x in self.fires if x.state != "extinguished"]) < 3:
+                self._next_fire_in = self.rng.randint(18, 32)
+                self.ignite_random_fire(auto_notify=True)
 
         # 保持固定 2 架健康无人机执行全林区覆盖巡逻（100s 全覆盖）
         for r in self.robots:
