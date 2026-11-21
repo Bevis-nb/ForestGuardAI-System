@@ -635,7 +635,15 @@ class TerrainMap(QWidget):
     # ------------------------------------------------------------------
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self._content().contains(event.position()):
-            nx, ny = self.norm(event.position())
+            pos = event.position()
+            for r in self.engine.robots:
+                pt = self.pt((r.x, r.y))
+                if math.hypot(pos.x() - pt.x(), pos.y() - pt.y()) <= 20:
+                    self.selected_robot = r.id
+                    self.robot_selected.emit(r.id)
+                    self.update()
+                    break
+            nx, ny = self.norm(pos)
             self.clicked_map.emit(nx, ny)
         super().mousePressEvent(event)
 

@@ -390,8 +390,8 @@ class SimEngine(QObject):
             ("UGV-04", "獾式四号", "UGV", "FG-R4 轮履两用"),
         ]
         positions = [
-            (0.30, 0.30), (0.42, 0.24), (0.52, 0.36), (0.24, 0.52),
-            (0.22, 0.70), (0.32, 0.76), (0.42, 0.68), (0.50, 0.76),
+            (0.25, 0.25), BASES[0][2:], (0.72, 0.65), BASES[2][2:],
+            BASES[1][2:], BASES[3][2:], BASES[1][2:], BASES[3][2:],
         ]
         tasks = ["火线侦察", "热源定位", "空中中继", "通信中继",
                  "地面扑打", "隔离带作业", "水带铺设", "洒水降温"]
@@ -480,11 +480,14 @@ class SimEngine(QObject):
             self._next_fire_in = self.rng.randint(18, 32)
             self.ignite_random_fire(auto_notify=True)
 
-        # 保持固定 2 架无人机执行全林区覆盖巡逻（100s 全覆盖）
+        # 保持固定 2 架健康无人机执行全林区覆盖巡逻（100s 全覆盖）
+        for r in self.robots:
+            if r.kind == "UAV" and r.mission == "patrol" and (r.temp > 45.0 or r.battery < 25.0):
+                self._assign_nearest_base(r)
         patrol_uavs = [r for r in self.robots if r.kind == "UAV" and r.mission == "patrol"]
         if len(patrol_uavs) < 2:
             for r in self.robots:
-                if r.kind == "UAV" and r.mission == "idle" and r.status != "offline" and r.battery >= 25.0:
+                if r.kind == "UAV" and r.mission == "idle" and r.status != "offline" and r.battery >= 25.0 and r.temp <= 45.0:
                     r.mission = "patrol"
                     r.status = "on_mission"
                     r.task = "全林区覆盖巡逻"
@@ -498,13 +501,16 @@ class SimEngine(QObject):
         for r in self.robots:
             if r.status == "offline":
                 continue
+            near_fire = any(math.hypot(r.x - f.origin[0], r.y - f.origin[1]) < 0.14 for f in active_fires_now)
+            if near_fire and r.status == "on_mission":
+                r.temp = min(68.0, r.temp + self.rng.uniform(1.5, 2.8))
+            elif r.status in ("standby", "charging"):
+                r.temp = max(25.0, r.temp - 2.5)
+            else:
+                r.temp = max(25.0, r.temp - 1.2)
+
             if r.status == "on_mission":
                 r.battery = max(6.0, r.battery - self.rng.uniform(0.04, 0.12))
-                near_fire = any(math.hypot(r.x - f.origin[0], r.y - f.origin[1]) < 0.14 for f in active_fires_now)
-                if near_fire:
-                    r.temp = min(68.0, r.temp + self.rng.uniform(1.5, 2.8))
-                else:
-                    r.temp = max(24.0, r.temp - 0.6)
                 r.speed = max(0.2, min(6.0, r.speed + self.rng.uniform(-0.15, 0.15)))
                 r.history = (r.history + [r.temp])[-14:]
             elif r.status == "charging":
@@ -785,10 +791,6 @@ class SimEngine(QObject):
         if not self.dispatch_plan:
             self.recommend_dispatch()
         chosen = [p for p in self.dispatch_plan if selected_ids is None or p["robot_id"] in selected_ids]
-        for r in self.robots:
-            if r.status not in ("offline", "charging"):
-                r.spraying = False
-                r.mission = "idle"
         id_map = {r.id: r for r in self.robots}
         for p in chosen:
             r = id_map.get(p["robot_id"])

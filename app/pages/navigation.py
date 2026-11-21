@@ -250,7 +250,12 @@ class NavPage(ScrollPage):
         wspeed = self.slider_风速.value() / 10
         slope = self.slider_地形坡度.value() / 100
         algo = ["RL-A*", "A*", "Dijkstra", "RRT*"][self.algo.currentIndex()]
-        plan = self.engine.replan(wind_deg, wspeed, slope, algo)
+        r = next((x for x in self.engine.robots if x.id == self._selected_robot_id), self.engine.robots[0])
+        start = (r.x, r.y)
+        goal = (r.home_x, r.home_y) if r.mission == "returning" else (
+            (r.target_x, r.target_y) if r.mission in ("en_route", "spraying", "recon") else self.engine.fire_origin
+        )
+        plan = self.engine.replan(wind_deg, wspeed, slope, algo, start=start, goal=goal)
         risk_drop = (self.engine.baseline.risk - plan.risk) * 100
         self._build_comparison()
         if risk_drop > 0.4:
