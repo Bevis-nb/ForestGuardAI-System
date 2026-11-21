@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from .. import icons, theme
 from ..canvas import CameraView, FirstPerson3DView, VideoFeed
 from ..charts import LineChart
-from ..simulation import Robot, SimEngine
+from ..simulation import BASES, Robot, SimEngine
 from ..widgets import (
     Card,
     IconTile,
@@ -502,8 +502,14 @@ class FleetPage(ScrollPage):
         super().__init__(
             engine,
             "装备管理",
-            "8 台林火装备 · 电池 / 链路 / 载荷实时遥测 · 支持远程接管",
+            "按基地查看林火装备 · 电池 / 链路 / 载荷实时遥测 · 支持远程接管",
         )
+        from PySide6.QtWidgets import QComboBox
+        self.base_filter = QComboBox()
+        self.base_filter.addItems(["全部基地"] + [b[1] for b in BASES])
+        self.base_filter.setFixedHeight(32)
+        self.base_filter.currentIndexChanged.connect(self._filter_by_base)
+        self.add_action(self.base_filter)
         self.add_action(Pill("8 台在线", "success"))
         self.add_action(button("批量充电", "soft", "battery", height=34, on_click=self._charge_all))
         self.add_action(button("接入新装备", "primary", "plus", height=34, on_click=self._add))
@@ -605,6 +611,18 @@ class FleetPage(ScrollPage):
         engine.tick.connect(self._refresh)
 
     # ------------------------------------------------------------------
+    def _filter_by_base(self):
+        idx = self.base_filter.currentIndex()
+        if idx == 0:
+            for card in self.cards.values():
+                card.setVisible(True)
+            return
+        _bid, _bname, bx, by = BASES[idx - 1]
+        for rid, card in self.cards.items():
+            r = card.robot
+            at_base = abs(r.home_x - bx) < 0.08 and abs(r.home_y - by) < 0.08
+            card.setVisible(at_base)
+
     def _select(self, robot_id: str):
         self.selected = robot_id
         for rid, card in self.cards.items():
