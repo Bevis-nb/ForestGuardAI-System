@@ -517,7 +517,7 @@ class SimEngine(QObject):
             if r.spraying:
                 f_obj = next((f for f in self.fires if f.id == (r.assigned_fire_id or self.fire.id)), self.fire)
                 fx, fy = f_obj.origin
-                if math.hypot(r.x - fx, r.y - fy) > 0.10:
+                if r.mission != "spraying" or math.hypot(r.x - fx, r.y - fy) > 0.06:
                     r.spraying = False
                     r.mission = "en_route"
             if r.spraying and not self.estop:
