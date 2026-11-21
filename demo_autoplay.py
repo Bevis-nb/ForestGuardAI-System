@@ -50,12 +50,10 @@ def main() -> int:
         ),
     )
 
-    # 4. 流程二：突发随机起火 → 确认调度 → 2× 扑救扑灭 (19.0s)
+    # 4. 流程二：突发随机起火 → 自动调度 → 2× 扑救扑灭 (19.0s)
     def step_ignite():
         win.navigate_to("overview")
         f = win.engine.ignite_random_fire()
-        plan = win.engine.recommend_dispatch()
-        win.engine.confirm_dispatch([p["robot_id"] for p in plan])
         ov = win.dashboard.pages.get("overview")
         if ov:
             ov.map.highlight_fire()

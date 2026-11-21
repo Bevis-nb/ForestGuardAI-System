@@ -81,23 +81,34 @@ class FireAnalysisTests(unittest.TestCase):
     def test_all_fires_painted_and_assigned_force_icons(self):
         a = self.engine.ignite_random_fire((0.25, 0.3))
         b = self.engine.ignite_random_fire((0.75, 0.7))
-        drone, robot = self.engine.robots[0], self.engine.robots[4]
-        drone.assigned_fire_id = a.id
-        robot.assigned_fire_id = a.id
+        drone = next(r for r in self.engine.robots if r.assigned_fire_id == a.id and r.kind == "UAV")
+        robot = next(r for r in self.engine.robots if r.assigned_fire_id == a.id and r.kind == "UGV")
         self.page._select_fire(a.id)
         self.page.map.grab()
         self.assertEqual(set(self.page.map._prediction["fires"]), {a.id, b.id})
-        self.assertEqual(self.page.force_count.text(), "2 台")
+        self.assertEqual(self.page.force_count.text(), "5 台")
         drone_row = self.page.findChild(QWidget, "force_" + drone.id)
         robot_row = self.page.findChild(QWidget, "force_" + robot.id)
         self.assertIsNotNone(drone_row.findChild(QWidget, "drone_icon"))
         self.assertIsNotNone(robot_row.findChild(QWidget, "robot_icon"))
         self.page._select_fire(b.id)
-        self.assertEqual(self.page.force_count.text(), "0 台")
+        self.assertEqual(self.page.force_count.text(), "5 台")
         b.state = "extinguished"
         self.page._refresh()
         self.page.map.grab()
         self.assertEqual(set(self.page.map._prediction["fires"]), {a.id})
+
+    def test_automatic_dispatch_shows_equipment(self):
+        fire = self.engine.ignite_random_fire((0.4, 0.4))
+        self.page._refresh()
+        self.app.processEvents()
+        assigned = [r for r in self.engine.robots if r.assigned_fire_id == fire.id]
+        self.assertEqual(self.page.force_count.text(), f"{len(assigned)} 台")
+        self.assertTrue(self.page.force_text.isHidden())
+        for robot in assigned:
+            row = self.page.findChild(QWidget, "force_" + robot.id)
+            self.assertIsNotNone(row)
+            self.assertTrue(row.isVisible())
 
     def test_suspicious_fire_is_tracked(self):
         fire = self.engine.trigger_suspicious_fire((0.4, 0.4))

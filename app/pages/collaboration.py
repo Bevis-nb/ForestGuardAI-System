@@ -80,8 +80,7 @@ class CollaborationPage(ScrollPage):
         # 新增：自主调度说明与评判标准面板
         explain = Panel("自主协同调度 · 任务安排说明与评判标准",
                         "评判标准：能力匹配 40% + 距火点距离 25% + 剩余电量 20% + 载荷/水量 15%", "sparkles")
-        explain.add_action(button("重新评估派单", "soft", "refresh", height=26,
-                                  on_click=self._re_evaluate))
+        explain.add_action(Pill("自动调度", "success"))
         self.dispatch_box = QVBoxLayout()
         self.dispatch_box.setSpacing(6)
         explain.addLayout(self.dispatch_box)
@@ -218,9 +217,10 @@ class CollaborationPage(ScrollPage):
         toast(self, f"编队已切换为 {text}")
 
     def _re_evaluate(self):
-        self.engine.evaluate_and_dispatch()
+        plan = self.engine.evaluate_and_dispatch()
         self._refresh_dispatch()
-        toast(self, "已根据最新火点与装备状态重新评估并指派编队", "success")
+        toast(self, "已根据最新火点与装备状态重新评估并指派编队" if plan
+              else "暂无活跃火点或可用装备，未下发调度", "success" if plan else "info")
 
     def _refresh_dispatch(self):
         while self.dispatch_box.count():
@@ -230,7 +230,7 @@ class CollaborationPage(ScrollPage):
                 w.deleteLater()
         plan = self.engine.dispatch_plan
         if not plan:
-            self.dispatch_box.addWidget(label("暂无调度记录，点击「重新评估派单」生成", "caption", color=theme.MUTED))
+            self.dispatch_box.addWidget(label("暂无调度记录，发现火点后自动调度", "caption", color=theme.MUTED))
             return
         for p in plan:
             row_w = QWidget()

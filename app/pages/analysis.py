@@ -177,20 +177,23 @@ class AnalysisPage(ScrollPage):
 
     def _refresh_forces(self, fire_id: str | None):
         assigned = [r for r in self.engine.robots if fire_id and r.assigned_fire_id == fire_id]
-        signature = (fire_id, tuple((r.id, r.kind, r.task, r.status, round(r.battery))
-                                    for r in assigned))
+        entries = [(r, r.task) for r in assigned]
+        signature = (fire_id, tuple((r.id, r.kind, task, r.status, round(r.battery))
+                                    for r, task in entries))
         if signature == self._force_signature:
             return
         self._force_signature = signature
         while self.force_rows.count():
             item = self.force_rows.takeAt(0)
             if item.widget():
+                item.widget().hide()
+                item.widget().setParent(None)
                 item.widget().deleteLater()
-        self.force_count.set_text(f"{len(assigned)} 台")
-        self.force_count.set_kind("success" if assigned else "info")
-        self.force_text.setVisible(not assigned)
-        self.force_text.setText("该火点暂无已分配装备" if fire_id else "暂无已分配装备")
-        for r in assigned:
+        self.force_count.set_text(f"{len(entries)} 台")
+        self.force_count.set_kind("success" if entries else "info")
+        self.force_text.setVisible(not entries)
+        self.force_text.setText("暂无可用装备，系统将自动重试调度" if fire_id else "暂无已分配装备")
+        for r, task_name in entries:
             is_uav = r.kind == "UAV"
             row = QWidget()
             row.setObjectName("force_" + r.id)
@@ -207,12 +210,13 @@ class AnalysisPage(ScrollPage):
             col.setSpacing(2)
             col.addWidget(label(f"{r.id} · {'无人机' if is_uav else '地面机器人'}", None,
                                 color=color, size=11.5, weight=700))
-            task = label(r.task, "caption", color=theme.TEXT_SOFT)
+            task = label(task_name, "caption", color=theme.TEXT_SOFT)
             task.setWordWrap(True)
             col.addWidget(task)
             lay.addLayout(col, 1)
             lay.addWidget(label(f"{r.battery:.0f}%", "caption", color=theme.MUTED))
             self.force_rows.addWidget(row)
+            row.show()
 
     def _select_fire(self, fire_id: str):
         if any(f.id == fire_id and f.state != "extinguished" for f in self.engine.fires):

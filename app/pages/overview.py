@@ -33,8 +33,6 @@ class OverviewPage(ScrollPage):
         self.add_action(self.fire_pill)
         self.speed_btn = button("1× 倍速", "ghost", "clock", height=34, on_click=self._cycle_speed)
         self.add_action(self.speed_btn)
-        self.add_action(button("调度确认", "primary", "sparkles", height=34,
-                               on_click=self._open_dispatch_dialog))
 
         self._build_stats()
         self._build_middle()
@@ -242,44 +240,9 @@ class OverviewPage(ScrollPage):
 
     def _on_fire_appeared(self, _fire=None):
         self.map.highlight_fire()
-        if self.isVisible():
-            self._open_dispatch_dialog()
 
     def _on_recon_confirmed(self, _fire=None):
-        if self.isVisible():
-            self._open_dispatch_dialog()
-
-    def _open_dispatch_dialog(self):
-        from PySide6.QtWidgets import QCheckBox, QDialog
-        plan = self.engine.recommend_dispatch()
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"设备调度推荐与人工确认 · 火点 {self.engine.fire.id}")
-        dlg.setMinimumWidth(520)
-        lay = QVBoxLayout(dlg)
-        lay.setSpacing(10)
-        lay.addWidget(label(
-            f"火点 {self.engine.fire.id}（强度 {self.engine.fire.intensity:.0f}% · 面积 {self.engine.fire.area:.1f} ha）",
-            None, size=14, weight=700,
-        ))
-        lay.addWidget(label(
-            "算法评判标准：能力匹配 40% + 距火点距离 25% + 剩余电量 20% + 载荷/水量 15%",
-            "caption", color=theme.MUTED,
-        ))
-        checks: list[tuple[str, QCheckBox]] = []
-        for p in plan:
-            cb = QCheckBox(f"[{p['robot_id']}] {p['task']}  —  {p['reason']}")
-            cb.setChecked(True)
-            lay.addWidget(cb)
-            checks.append((p["robot_id"], cb))
-        btns = QHBoxLayout()
-        btns.addStretch(1)
-        btns.addWidget(button("取消", "ghost", height=32, on_click=dlg.reject))
-        btns.addWidget(button("确认并下发扑救", "primary", "sparkles", height=32, on_click=dlg.accept))
-        lay.addLayout(btns)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            chosen = [rid for rid, cb in checks if cb.isChecked()]
-            self.engine.confirm_dispatch(chosen)
-            toast(self, f"已按人工确认方案下发 {len(chosen)} 台装备前往扑救", "success")
+        self.map.highlight_fire()
 
     def _cycle_speed(self):
         nxt = {1: 2, 2: 4, 4: 1}.get(self.engine.sim_speed, 1)
