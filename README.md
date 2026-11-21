@@ -4,9 +4,27 @@
 
 > **安全提示：不是实际防灭火系统。** 火情识别、图像、火势预测、地形、轨迹、装备状态和协同均为模拟或示意；未接入真实传感器、飞控或经过验证的 AI 模型。不得用于真实作战、飞行或安全决策。部分页面上的指标、模型和链路控件仅为界面演示。
 
-![指挥总览历史截图](docs/screenshots/02-overview.png)
+## 界面预览
 
-> `docs/screenshots/` 中的截图为历史版本示意，可能与当前界面不同。
+以下截图来自当前仿真界面，火情和装备数据仅为演示。不同窗口尺寸下布局可能有所变化。
+
+| 登录 | 指挥总览 |
+| --- | --- |
+| ![登录界面](docs/screenshots/01-login.png) | ![指挥总览](docs/screenshots/02-overview.png) |
+
+| 自主导航 | 多机协作 |
+| --- | --- |
+| ![自主导航与路径规划](docs/screenshots/04-navigation.png) | ![多机器人协作日志](docs/screenshots/05-collaboration.png) |
+
+| 火情分析 | 装备管理 |
+| --- | --- |
+| ![火情分析与决策](docs/screenshots/06-analysis.png) | ![装备管理](docs/screenshots/08-fleet.png) |
+
+| 系统设置 | 遥控终端（仿真） |
+| --- | --- |
+| ![系统设置](docs/screenshots/09-settings.png) | ![第一人称演示视角](docs/screenshots/10-remote-eo.png) |
+
+遥控终端还可查看[红外模式](docs/screenshots/11-remote-ir.png)和[断链状态](docs/screenshots/12-remote-offline.png)。
 
 ## 快速开始
 
@@ -90,7 +108,7 @@ app/assets/                   可见光与红外演示图片
 app/config.py、utils/          本地配置与账号数据
 Gui/                          旧版界面存档
 tests/                        仿真及界面回归测试
-docs/                         算法说明、Word 文档与历史截图
+docs/                         算法说明、Word 文档与界面截图
 ```
 
 ## 文档
