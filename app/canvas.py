@@ -56,6 +56,7 @@ class TerrainMap(QWidget):
     clicked_map = Signal(float, float)
     hovered = Signal(str)
     robot_selected = Signal(str)
+    fire_selected = Signal(str)
 
     def __init__(self, engine: SimEngine, mode: str = "overview", parent=None,
                  show_legend: bool = True):
@@ -71,6 +72,10 @@ class TerrainMap(QWidget):
         self.phase = 0.0
         self.minutes = 30
         self.selected_robot = None
+        self.selected_fire_id = None
+        self.select_fires = False
+        self._prediction_key = None
+        self._prediction = None
         self._show_robots = True
         self._highlight = 0.0
         self._static: QPixmap | None = None
@@ -309,12 +314,28 @@ class TerrainMap(QWidget):
         p.end()
 
     # ------------------------------------------------------------------
+    def set_selected_fire(self, fire_id: str | None):
+        if self.selected_fire_id != fire_id:
+            self.selected_fire_id = fire_id
+            self._prediction_key = None
+            self.update()
+
     def _paint_heat(self, p: QPainter, r: QRectF):
-        grid = self._spread.grid(self.minutes, self.engine.wind_deg,
-                                 self.engine.wind_speed, self.engine.humidity,
-                                 self.engine.fire_origin)
+        fires = [f for f in self.engine.fires if f.state != "extinguished"]
+        fire = next((f for f in fires if f.id == self.selected_fire_id), None)
+        if fire is None and fires and not self.select_fires:
+            fire = fires[0]
+        if fire is None:
+            return
+        key = (fire.id, fire.origin, fire.intensity, self.minutes,
+               self.engine.wind_deg, self.engine.wind_speed, self.engine.humidity)
+        if key != self._prediction_key:
+            self._prediction = self._spread.assess(fire, self.minutes, self.engine.wind_deg,
+                                                   self.engine.wind_speed, self.engine.humidity)
+            self._prediction_key = key
+        prediction = self._prediction
+        grid = prediction["grid"]
         h, w = len(grid), len(grid[0])
-        # 低分辨率置信场 -> 平滑放大，避免网格感
         img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
         img.fill(0)
         for y in range(h):
@@ -323,38 +344,22 @@ class TerrainMap(QWidget):
                 if v < 0.10:
                     continue
                 if v > 0.66:
-                    color = QColor(226, 62, 66, int(150 + v * 90))
+                    color = QColor(226, 62, 66, int(110 + v * 70))
                 elif v > 0.40:
-                    color = QColor(240, 146, 52, int(110 + v * 70))
+                    color = QColor(240, 146, 52, int(80 + v * 70))
                 else:
-                    color = QColor(248, 202, 118, int(50 + v * 60))
+                    color = QColor(248, 202, 118, int(45 + v * 60))
                 img.setPixelColor(x, y, color)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         p.drawImage(r, img)
 
-        # 每个活跃火点各自生成一条下风向建议隔离带
-        fires = [f for f in getattr(self.engine, "fires", []) if not f.extinguished]
-        if not fires and hasattr(self.engine, "fire"):
-            fires = [self.engine.fire]
-        for f in fires:
-            fx, fy = f.origin
-            rad = math.radians(self.engine.wind_deg)
-            dx, dy = math.cos(rad) * 0.08, math.sin(rad) * 0.08
-            px, py = -math.sin(rad) * 0.10, math.cos(rad) * 0.10
-            p1 = QPointF(r.left() + r.width() * (fx + dx - px), r.top() + r.height() * (fy + dy - py))
-            p2 = QPointF(r.left() + r.width() * (fx + dx * 1.2), r.top() + r.height() * (fy + dy * 1.2))
-            p3 = QPointF(r.left() + r.width() * (fx + dx + px), r.top() + r.height() * (fy + dy + py))
-            iso = QPainterPath(p1)
-            iso.quadTo(p2, p3)
-            p.setPen(QPen(C("#FFFFFF"), 6))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawPath(iso)
-            pen = QPen(C(theme.AMBER), 3)
-            pen.setStyle(Qt.PenStyle.DashLine)
-            pen.setDashPattern([4, 4])
-            p.setPen(pen)
-            p.drawPath(iso)
-        p.setPen(Qt.PenStyle.NoPen)
+        a, b = prediction["line"]
+        p1, p2 = self.pt(a), self.pt(b)
+        p.setPen(QPen(C("#FFFFFF"), 6))
+        p.drawLine(p1, p2)
+        pen = QPen(C(theme.AMBER), 3, Qt.PenStyle.DashLine)
+        p.setPen(pen)
+        p.drawLine(p1, p2)
 
     def highlight_fire(self):
         self._highlight = 3.2
@@ -378,7 +383,13 @@ class TerrainMap(QWidget):
         if not fires:
             return
         for f in fires:
+            if self.select_fires and f.state == "extinguished":
+                continue
             center = self.pt(f.origin)
+            if self.select_fires and f.id == self.selected_fire_id:
+                p.setPen(QPen(C("#FFFFFF"), 3))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(center, 16, 16)
             if f.state == "extinguished" or f.intensity <= 0.1:
                 p.setPen(QPen(C(theme.ACCENT), 2))
                 p.setBrush(QColor(18, 166, 106, 40))
@@ -627,7 +638,9 @@ class TerrainMap(QWidget):
             (theme.ACCENT, "巡逻中"),
             (theme.ACCENT_DARK, "基地"),
         ]
-        if self.show_heat:
+        if self.select_fires:
+            items = [(theme.RED, "火点"), ("#F09234", "潜在燃烧区"), (theme.AMBER, "建议隔离带")]
+        elif self.show_heat:
             items.append((theme.AMBER, "蔓延概率"))
         x = r.left() + 15
         y = r.top() + 18
@@ -646,7 +659,15 @@ class TerrainMap(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self._content().contains(event.position()):
             pos = event.position()
-            for r in self.engine.robots:
+            if self.select_fires:
+                active = [f for f in self.engine.fires if f.state != "extinguished"]
+                nearest = min(active, key=lambda f: math.hypot(pos.x() - self.pt(f.origin).x(),
+                                                                 pos.y() - self.pt(f.origin).y()), default=None)
+                if nearest and math.hypot(pos.x() - self.pt(nearest.origin).x(),
+                                          pos.y() - self.pt(nearest.origin).y()) <= 24:
+                    self.fire_selected.emit(nearest.id)
+                return
+            for r in self.engine.robots if self._show_robots else []:
                 pt = self.pt((r.x, r.y))
                 if math.hypot(pos.x() - pt.x(), pos.y() - pt.y()) <= 20:
                     self.selected_robot = r.id

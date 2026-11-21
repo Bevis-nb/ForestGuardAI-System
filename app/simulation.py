@@ -227,6 +227,30 @@ class FireSpreadModel:
         return out
 
 
+    def assess(self, fire, minutes: int, wind_deg: float, wind_speed: float,
+               humidity: float) -> dict:
+        """演示性概率场和下风向隔离带；不是经验证的火场预测。"""
+        grid = self.grid(minutes, wind_deg, wind_speed, humidity, fire.origin)
+        # 隔离带放在中等概率区的下风缘，垂直于蔓延方向。
+        angle = math.radians(wind_deg)
+        dx, dy = math.cos(angle), math.sin(angle)
+        w, h = len(grid[0]), len(grid)
+        distances = [((x / w - fire.origin[0]) * dx + (y / h - fire.origin[1]) * dy)
+                     for y, row in enumerate(grid) for x, value in enumerate(row)
+                     if value >= 0.4]
+        distance = max(0.04, max(distances, default=0.04))
+        cx, cy = fire.origin[0] + dx * distance, fire.origin[1] + dy * distance
+        half = min(0.18, 0.06 + distance * 0.45)
+        def clamp(value):
+            return max(0.0, min(1.0, value))
+        line = ((clamp(cx + dy * half), clamp(cy - dx * half)),
+                (clamp(cx - dy * half), clamp(cy + dx * half)))
+        # 地图尺度 1200m × 800m，像元统计面积仅为演示估计。
+        area = sum(v >= 0.4 for row in grid for v in row) * (1200 * 800 / (w * h)) / 10000
+        return {"grid": grid, "line": line, "area": area,
+                "width_m": 12 if fire.intensity >= 70 else (8 if fire.intensity >= 35 else 6)}
+
+
 # ---------------------------------------------------------------------------
 # 运行状态
 # ---------------------------------------------------------------------------
@@ -654,15 +678,16 @@ class SimEngine(QObject):
             else:
                 r.mission = "idle"
                 r.arrived = True
-                if self.fire.state == "suspicious":
-                    self.fire.state = "spreading"
+                recon_fire = next((f for f in self.fires if f.id == r.assigned_fire_id), None)
+                if recon_fire and recon_fire.state == "suspicious":
+                    recon_fire.state = "spreading"
                     self.push_alert(
-                        f"无人机 {r.id} 现场勘察确认：火点 {self.fire.id} 属实！",
+                        f"无人机 {r.id} 现场勘察确认：火点 {recon_fire.id} 属实！",
                         f"热成像温度 418℃，建议立即调度灭火编队前往扑救",
                         "critical", f"{r.id} 空中侦察",
                     )
-                    self.push_event(f"{r.id} 抵近勘察确认火点 {self.fire.id} 属实，等待指挥员确认调度方案", "warning")
-                    self.recon_confirmed.emit(self.fire)
+                    self.push_event(f"{r.id} 抵近勘察确认火点 {recon_fire.id} 属实，等待指挥员确认调度方案", "warning")
+                    self.recon_confirmed.emit(recon_fire)
             return
 
         if r.mission in ("en_route", "spraying"):
@@ -724,6 +749,7 @@ class SimEngine(QObject):
             peak_intensity=intensity, peak_area=area,
             history=[intensity], area_history=[area],
         )
+        self.fires.append(self.fire)
         self.fire_area = area
         self.containment = 15.0
         self._milestones.clear()
@@ -737,6 +763,7 @@ class SimEngine(QObject):
         scout.mission = "recon"
         scout.task = f"勘察可疑火点 {fid}"
         scout.target_x, scout.target_y = origin
+        scout.assigned_fire_id = fid
         scout.spraying = False
 
         self.push_alert(
