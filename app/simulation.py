@@ -389,10 +389,12 @@ class SimEngine(QObject):
             ("UGV-03", "獾式三号", "UGV", "FG-R3 履带底盘"),
             ("UGV-04", "獾式四号", "UGV", "FG-R4 轮履两用"),
         ]
+        base_prefixes = ["A", "B", "C", "D"]
         robots: list[Robot] = []
         for b_idx, (bid, bname, bx, by) in enumerate(BASES):
+            prefix = base_prefixes[b_idx]
             for i, (rid, name, kind, model) in enumerate(specs):
-                full_id = f"{bid}-{rid}"
+                full_id = f"{prefix}-{rid}"
                 r = Robot(full_id, f"{bname[:2]}·{name}", kind, model)
                 r.x, r.y = bx, by
                 r.home_x, r.home_y = bx, by
