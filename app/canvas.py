@@ -570,6 +570,8 @@ class TerrainMap(QWidget):
             p.setPen(QPen(QColor(color), 2, Qt.PenStyle.DashLine))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(pos, radius + 7, radius + 7)
+        if not text:
+            return
         p.setFont(_font(8.5, 700))
         fm_w = 26
         p.setPen(C("#FFFFFF"))
