@@ -553,7 +553,7 @@ class TerrainMap(QWidget):
                     p.drawEllipse(QPointF(sx, sy), 3.2, 3.2)
 
             self._draw_badge(p, pos, "drone" if robot.kind == "UAV" else "robot",
-                             color, robot.id,
+                             color, "",
                              highlight=robot.id == self.selected_robot)
 
     def _draw_badge(self, p: QPainter, pos: QPointF, icon_name: str, color: str,
