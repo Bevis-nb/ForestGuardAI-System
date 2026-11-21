@@ -33,10 +33,6 @@ class OverviewPage(ScrollPage):
         self.add_action(self.fire_pill)
         self.speed_btn = button("1× 倍速", "ghost", "clock", height=34, on_click=self._cycle_speed)
         self.add_action(self.speed_btn)
-        self.add_action(button("可疑火点(预警)", "soft", "radar", height=34,
-                               on_click=self._trigger_suspicious))
-        self.add_action(button("随机起火(突发)", "dangerSoft", "flame", height=34,
-                               on_click=self._ignite_random))
         self.add_action(button("调度确认", "primary", "sparkles", height=34,
                                on_click=self._open_dispatch_dialog))
 
@@ -50,6 +46,7 @@ class OverviewPage(ScrollPage):
         engine.event_added.connect(self._on_event_added)
         engine.alert_added.connect(self._on_alert_added)
         engine.recon_confirmed.connect(self._on_recon_confirmed)
+        engine.fire_appeared.connect(self._on_fire_appeared)
         self._refresh()
 
     # ------------------------------------------------------------------
@@ -237,15 +234,14 @@ class OverviewPage(ScrollPage):
         self.map.highlight_fire()
         toast(self, f"预警：发现可疑火点 {f.id}，已派无人机前往勘察", "warning")
 
-    def _on_recon_confirmed(self, _fire=None):
+    def _on_fire_appeared(self, _fire=None):
+        self.map.highlight_fire()
         if self.isVisible():
             self._open_dispatch_dialog()
 
-    def _ignite_random(self):
-        f = self.engine.ignite_random_fire()
-        self.map.highlight_fire()
-        toast(self, f"突发火情 {f.id}！请确认调度方案", "error")
-        self._open_dispatch_dialog()
+    def _on_recon_confirmed(self, _fire=None):
+        if self.isVisible():
+            self._open_dispatch_dialog()
 
     def _open_dispatch_dialog(self):
         from PySide6.QtWidgets import QCheckBox, QDialog
