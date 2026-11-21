@@ -163,8 +163,7 @@ class NavPage(ScrollPage):
 
         self.root.addLayout(body, 1)
 
-        self.sw_lidar.toggled.connect(self.map.set_lidar_visible)
-        self.sw_cost.toggled.connect(self.map.set_costmap_visible)
+        # 已移除激光点云与代价地图开关
         self.temp_spin.valueChanged.connect(self._on_threshold)
         self._build_comparison()
         self._update_slider_labels()
