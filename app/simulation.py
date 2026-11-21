@@ -389,32 +389,27 @@ class SimEngine(QObject):
             ("UGV-03", "獾式三号", "UGV", "FG-R3 履带底盘"),
             ("UGV-04", "獾式四号", "UGV", "FG-R4 轮履两用"),
         ]
-        positions = [
-            (0.25, 0.25), BASES[0][2:], (0.72, 0.65), BASES[2][2:],
-            BASES[1][2:], BASES[3][2:], BASES[1][2:], BASES[3][2:],
-        ]
-        tasks = ["火线侦察", "热源定位", "空中中继", "通信中继",
-                 "地面扑打", "隔离带作业", "水带铺设", "洒水降温"]
         robots: list[Robot] = []
-        for i, (rid, name, kind, model) in enumerate(specs):
-            r = Robot(rid, name, kind, model)
-            r.x, r.y = positions[i]
-            r.home_x, r.home_y = positions[i]
-            r.battery = [86, 74, 63, 91, 68, 82, 57, 45][i]
-            r.signal = [96, 91, 88, 94, 89, 84, 92, 79][i]
-            r.payload = [40, 35, 20, 15, 78, 74, 66, 58][i]
-            r.water_cap = 35.0 if kind == "UAV" else 220.0
-            r.water_l = r.water_cap * (r.payload / 100.0)
-            r.suppression_power = 0.45 if kind == "UAV" else 1.25
-            r.temp = [24.5, 25.1, 24.9, 23.8, 41.2, 44.6, 39.8, 47.3][i]
-            r.status = ["on_mission", "standby", "on_mission", "standby",
-                        "standby", "standby", "standby", "charging"][i]
-            r.mission = "patrol" if i in (0, 2) else "idle"
-            r.task = "林区巡逻" if r.mission == "patrol" else "基地待命"
-            r.altitude = 80 + i * 6 if kind == "UAV" else 0
-            r.speed = 4.2 if kind == "UAV" else 1.1
-            r.history = [self.rng.uniform(0.6, 1.0) * v for v in (0.8, 0.9, 1.0, 0.95, 1.05, 1.0)]
-            robots.append(r)
+        for b_idx, (bid, bname, bx, by) in enumerate(BASES):
+            for i, (rid, name, kind, model) in enumerate(specs):
+                full_id = f"{bid}-{rid}"
+                r = Robot(full_id, f"{bname[:2]}·{name}", kind, model)
+                r.x, r.y = bx, by
+                r.home_x, r.home_y = bx, by
+                r.battery = [86, 74, 63, 91, 68, 82, 57, 45][i]
+                r.signal = [96, 91, 88, 94, 89, 84, 92, 79][i]
+                r.payload = [40, 35, 20, 15, 78, 74, 66, 58][i]
+                r.water_cap = 35.0 if kind == "UAV" else 220.0
+                r.water_l = r.water_cap * (r.payload / 100.0)
+                r.suppression_power = 0.45 if kind == "UAV" else 1.25
+                r.temp = 25.0
+                r.status = "on_mission" if (b_idx in (0, 2) and i == 0) else "standby"
+                r.mission = "patrol" if (b_idx in (0, 2) and i == 0) else "idle"
+                r.task = "全林区覆盖巡逻" if r.mission == "patrol" else f"{bname}待命"
+                r.altitude = 80 + i * 6 if kind == "UAV" else 0
+                r.speed = 4.2 if kind == "UAV" else 1.1
+                r.history = [25.0] * 6
+                robots.append(r)
         return robots
 
     def _make_alerts(self) -> list[dict]:
@@ -619,15 +614,11 @@ class SimEngine(QObject):
             self.push_alert(title, detail, level, "阈值监测")
 
     def _assign_nearest_base(self, r: Robot):
-        """选择最近且未被其他装备占用的基地返航充电。"""
-        occupied = {(round(o.home_x, 2), round(o.home_y, 2)) for o in self.robots if o.id != r.id and o.status in ("standby", "charging")}
-        free_bases = [b for b in BASES if (round(b[2], 2), round(b[3], 2)) not in occupied]
-        pool = free_bases if free_bases else BASES
-        best = min(pool, key=lambda b: math.hypot(r.x - b[2], r.y - b[3]))
-        r.home_x, r.home_y = best[2], best[3]
+        """任务完成或需充电时，只返回该装备所属的固定基地。"""
+        bname = next((b[1] for b in BASES if abs(b[2] - r.home_x) < 0.05 and abs(b[3] - r.home_y) < 0.05), "所属基地")
         r.mission = "returning"
         r.status = "returning"
-        r.task = f"返回{best[1]}"
+        r.task = f"返回{bname}"
 
     def _advance_robot(self, r: Robot):
         if self.estop or r.status not in ("on_mission", "returning"):
