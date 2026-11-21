@@ -34,13 +34,12 @@ from .widgets import Avatar, IconTile, Pill, icon_button, label, set_prop, toast
 APP_NAME = "智护森林 · ForestGuard AI"
 NAV_GROUPS = [
     ("指挥中心", [("overview", "指挥总览", "overview"),
-                  ("map", "火情地图", "map")]),
+                  ("map", "火情地图", "map"),
+                  ("fleet", "装备管理", "robot")]),
     ("智能决策", [("navigation", "自主导航", "route"),
                   ("collaboration", "多机协作", "users"),
-                  ("analysis", "火情分析", "flame"),
-                  ("interaction", "人机交互", "chat")]),
-    ("系统", [("fleet", "装备管理", "robot"),
-              ("settings", "系统设置", "settings")]),
+                  ("analysis", "火情分析", "flame")]),
+    ("系统", [("settings", "系统设置", "settings")]),
 ]
 TITLES = {key: title for _, items in NAV_GROUPS for key, title, _ in items}
 
@@ -327,7 +326,6 @@ class Dashboard(QWidget):
             ("navigation", NavPage),
             ("collaboration", CollaborationPage),
             ("analysis", AnalysisPage),
-            ("interaction", InteractionPage),
             ("fleet", FleetPage),
         ):
             page = page_cls(engine)
