@@ -514,6 +514,11 @@ class SimEngine(QObject):
                 r.battery = min(100.0, r.battery + 0.45)
                 r.water_l = min(r.water_cap, r.water_l + 6.0)
             self._advance_robot(r)
+            if r.spraying:
+                f_obj = next((f for f in self.fires if f.id == (r.assigned_fire_id or self.fire.id)), self.fire)
+                if math.hypot(r.x - f_obj.x, r.y - f_obj.y) > 0.10:
+                    r.spraying = False
+                    r.mission = "en_route"
             if r.spraying and not self.estop:
                 fid = r.assigned_fire_id or self.fire.id
                 suppression_by_fire[fid] = suppression_by_fire.get(fid, 0.0) + r.suppression_power
