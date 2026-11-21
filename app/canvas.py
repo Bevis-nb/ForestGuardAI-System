@@ -66,7 +66,7 @@ class TerrainMap(QWidget):
         self.show_costmap = mode == "navigation"
         self.show_heat = mode == "analysis"
         self.show_legend = show_legend
-        self.show_path = mode != "overview"
+        self.show_path = mode in ("overview", "navigation")
         self.fire_frame = 0
         self.phase = 0.0
         self.minutes = 30
@@ -100,7 +100,7 @@ class TerrainMap(QWidget):
         self.show_lidar = mode == "navigation"
         self.show_costmap = mode == "navigation"
         self.show_heat = mode == "analysis"
-        self.show_path = mode != "overview"
+        self.show_path = mode in ("overview", "navigation")
         self.update()
 
     def set_minutes(self, minutes: int):
