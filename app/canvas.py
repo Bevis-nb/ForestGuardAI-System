@@ -568,8 +568,8 @@ class TerrainMap(QWidget):
                              small=is_docked)
 
     def _draw_badge(self, p: QPainter, pos: QPointF, icon_name: str, color: str,
-                    text: str, highlight: bool = False):
-        radius = 13 if not highlight else 15
+                    text: str, highlight: bool = False, small: bool = False):
+        radius = (4.5 if small else 13) if not highlight else (6.5 if small else 15)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 235))
         p.drawEllipse(pos, radius, radius)
