@@ -322,16 +322,13 @@ class TerrainMap(QWidget):
 
     def _paint_heat(self, p: QPainter, r: QRectF):
         fires = [f for f in self.engine.fires if f.state != "extinguished"]
-        fire = next((f for f in fires if f.id == self.selected_fire_id), None)
-        if fire is None and fires and not self.select_fires:
-            fire = fires[0]
-        if fire is None:
+        if not fires:
             return
-        key = (fire.id, fire.origin, fire.intensity, self.minutes,
+        key = (tuple((f.id, f.origin, f.intensity, f.state) for f in fires), self.minutes,
                self.engine.wind_deg, self.engine.wind_speed, self.engine.humidity)
         if key != self._prediction_key:
-            self._prediction = self._spread.assess(fire, self.minutes, self.engine.wind_deg,
-                                                   self.engine.wind_speed, self.engine.humidity)
+            self._prediction = self._spread.assess_all(fires, self.minutes, self.engine.wind_deg,
+                                                       self.engine.wind_speed, self.engine.humidity)
             self._prediction_key = key
         prediction = self._prediction
         grid = prediction["grid"]
@@ -353,13 +350,21 @@ class TerrainMap(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         p.drawImage(r, img)
 
-        a, b = prediction["line"]
-        p1, p2 = self.pt(a), self.pt(b)
-        p.setPen(QPen(C("#FFFFFF"), 6))
-        p.drawLine(p1, p2)
-        pen = QPen(C(theme.AMBER), 3, Qt.PenStyle.DashLine)
-        p.setPen(pen)
-        p.drawLine(p1, p2)
+        # 每条隔离带对应一个火点；选中的火点加粗，无法避让时标红提示复核。
+        ordered = sorted(fires, key=lambda f: f.id == self.selected_fire_id)
+        for fire in ordered:
+            item = prediction["fires"][fire.id]
+            a, b = item["line"]
+            p1, p2 = self.pt(a), self.pt(b)
+            selected = fire.id == self.selected_fire_id
+            p.setPen(QPen(C("#FFFFFF"), 6 if selected else 4))
+            p.drawLine(p1, p2)
+            color = theme.RED if item["line_conflict"] else theme.AMBER
+            p.setPen(QPen(C(color), 3 if selected else 2, Qt.PenStyle.DashLine))
+            p.drawLine(p1, p2)
+            p.setFont(_font(9 if selected else 8, 700))
+            p.setPen(QPen(C(color)))
+            p.drawText((p1 + p2) / 2 + QPointF(4, -5), fire.id)
 
     def highlight_fire(self):
         self._highlight = 3.2

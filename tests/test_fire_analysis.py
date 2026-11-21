@@ -5,7 +5,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 from app.pages.analysis import AnalysisPage
 from app.simulation import SimEngine
@@ -77,6 +77,27 @@ class FireAnalysisTests(unittest.TestCase):
         self.page._select_fire(a.id)
         self.page.slider.setValue(3)
         self.assertIn(f"{p3['area']:.1f}", self.page.m_area.text_label.text())
+
+    def test_all_fires_painted_and_assigned_force_icons(self):
+        a = self.engine.ignite_random_fire((0.25, 0.3))
+        b = self.engine.ignite_random_fire((0.75, 0.7))
+        drone, robot = self.engine.robots[0], self.engine.robots[4]
+        drone.assigned_fire_id = a.id
+        robot.assigned_fire_id = a.id
+        self.page._select_fire(a.id)
+        self.page.map.grab()
+        self.assertEqual(set(self.page.map._prediction["fires"]), {a.id, b.id})
+        self.assertEqual(self.page.force_count.text(), "2 台")
+        drone_row = self.page.findChild(QWidget, "force_" + drone.id)
+        robot_row = self.page.findChild(QWidget, "force_" + robot.id)
+        self.assertIsNotNone(drone_row.findChild(QWidget, "drone_icon"))
+        self.assertIsNotNone(robot_row.findChild(QWidget, "robot_icon"))
+        self.page._select_fire(b.id)
+        self.assertEqual(self.page.force_count.text(), "0 台")
+        b.state = "extinguished"
+        self.page._refresh()
+        self.page.map.grab()
+        self.assertEqual(set(self.page.map._prediction["fires"]), {a.id})
 
     def test_suspicious_fire_is_tracked(self):
         fire = self.engine.trigger_suspicious_fire((0.4, 0.4))

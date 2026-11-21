@@ -66,7 +66,9 @@ class AnalysisPage(ScrollPage):
         metrics.addWidget(self.m_area)
         metrics.addWidget(self.m_dir)
         spread.addLayout(metrics)
-        spread.addWidget(label("色块：潜在燃烧概率；虚线：建议隔离带。结果仅为简化模拟，非实战依据。", "caption"))
+        self.total_area = label("全部火点潜在燃烧区：—", "caption", color=theme.TEXT_SOFT)
+        spread.addWidget(self.total_area)
+        spread.addWidget(label("色块合并全部火点；虚线为各火点隔离带，红线需人工复核。仅供仿真演示。", "caption"))
         body.addWidget(spread, 3)
 
         decision = Panel("灭火策略", "针对选中火点动态生成 · 仅供演示", "shield")
@@ -154,10 +156,16 @@ class AnalysisPage(ScrollPage):
         force_head.setSpacing(7)
         force_head.addWidget(IconTile("users", theme.ACCENT, theme.ACCENT_SOFT, 30, 15, 9))
         force_head.addWidget(label("投入力量", None, size=12, weight=700), 1)
+        self.force_count = Pill("0 台", "info", dot=False)
+        force_head.addWidget(self.force_count)
         decision.addLayout(force_head)
-        self.force_text = label("暂无已分配装备", "caption", color=theme.TEXT_SOFT)
+        self.force_text = label("该火点暂无已分配装备", "caption", color=theme.MUTED)
         self.force_text.setWordWrap(True)
         decision.addWidget(self.force_text)
+        self.force_rows = QVBoxLayout()
+        self.force_rows.setSpacing(6)
+        decision.addLayout(self.force_rows)
+        self._force_signature = None
         decision.addStretch(1)
         body.addWidget(decision, 2)
         self.root.addLayout(body, 1)
@@ -166,6 +174,45 @@ class AnalysisPage(ScrollPage):
         engine.fire_appeared.connect(lambda _fire: self._refresh())
         engine.recon_confirmed.connect(lambda _fire: self._refresh())
         self._on_time(self.slider.value())
+
+    def _refresh_forces(self, fire_id: str | None):
+        assigned = [r for r in self.engine.robots if fire_id and r.assigned_fire_id == fire_id]
+        signature = (fire_id, tuple((r.id, r.kind, r.task, r.status, round(r.battery))
+                                    for r in assigned))
+        if signature == self._force_signature:
+            return
+        self._force_signature = signature
+        while self.force_rows.count():
+            item = self.force_rows.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.force_count.set_text(f"{len(assigned)} 台")
+        self.force_count.set_kind("success" if assigned else "info")
+        self.force_text.setVisible(not assigned)
+        self.force_text.setText("该火点暂无已分配装备" if fire_id else "暂无已分配装备")
+        for r in assigned:
+            is_uav = r.kind == "UAV"
+            row = QWidget()
+            row.setObjectName("force_" + r.id)
+            color = theme.BLUE if is_uav else theme.ACCENT_DARK
+            bg = theme.BLUE_SOFT if is_uav else theme.ACCENT_SOFT
+            row.setStyleSheet(f"#{row.objectName()} {{ background:{bg}; border-radius:10px; }}")
+            lay = QHBoxLayout(row)
+            lay.setContentsMargins(9, 7, 9, 7)
+            lay.setSpacing(8)
+            icon = IconTile("drone" if is_uav else "robot", color, theme.SURFACE, 32, 16, 9)
+            icon.setObjectName("drone_icon" if is_uav else "robot_icon")
+            lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            col.addWidget(label(f"{r.id} · {'无人机' if is_uav else '地面机器人'}", None,
+                                color=color, size=11.5, weight=700))
+            task = label(r.task, "caption", color=theme.TEXT_SOFT)
+            task.setWordWrap(True)
+            col.addWidget(task)
+            lay.addLayout(col, 1)
+            lay.addWidget(label(f"{r.battery:.0f}%", "caption", color=theme.MUTED))
+            self.force_rows.addWidget(row)
 
     def _select_fire(self, fire_id: str):
         if any(f.id == fire_id and f.state != "extinguished" for f in self.engine.fires):
@@ -204,14 +251,17 @@ class AnalysisPage(ScrollPage):
             self.iso_direction.set_kind("info")
             self.iso_text.setText("暂无建议")
             self.strategy_text.setText("当前没有活跃火点，持续监测林区。")
-            self.force_text.setText("暂无已分配装备")
+            self._refresh_forces(None)
+            self.total_area.setText("全部火点潜在燃烧区：—")
             self.m_area.set_text("潜在燃烧区 —")
             self.m_dir.set_text("蔓延方向 —")
             return
 
-        prediction = e.spread_model.assess(fire, self.slider.value() * 30,
-                                           e.wind_deg, e.wind_speed, e.humidity)
+        aggregate = e.spread_model.assess_all(active, self.slider.value() * 30,
+                                               e.wind_deg, e.wind_speed, e.humidity)
+        prediction = aggregate["fires"][fire.id]
         a, b = prediction["line"]
+        self.total_area.setText(f"全部火点潜在燃烧区：{aggregate['area']:.1f} ha（重叠区域不重复统计）")
         self.selection_pill.set_text(f"分析 {fire.id} · {len(active)} 个火点")
         self.strategy_pill.set_text("待勘察" if fire.state == "suspicious" else "模拟建议")
         self.strategy_pill.set_kind("warning")
@@ -220,10 +270,11 @@ class AnalysisPage(ScrollPage):
         self.area_value.setText(f"{fire.area:.1f} ha")
         self.containment_value.setText(f"{fire.containment:.0f}%")
         self.action_followup.setText(f"推演时刻 T+{self.slider.value() * 30} min · 随火情动态更新")
-        self.iso_direction.set_text("下风向")
-        self.iso_direction.set_kind("warning")
+        self.iso_direction.set_text("需复核" if prediction["line_conflict"] else "下风向")
+        self.iso_direction.set_kind("critical" if prediction["line_conflict"] else "warning")
         self.iso_text.setText(f"下风向布设，建议宽 {prediction['width_m']} m\n"
-                              f"({a[0]:.2f}, {a[1]:.2f}) → ({b[0]:.2f}, {b[1]:.2f})")
+                              f"({a[0]:.2f}, {a[1]:.2f}) → ({b[0]:.2f}, {b[1]:.2f})"
+                              + ("\n可能穿越燃烧区，请人工复核" if prediction["line_conflict"] else ""))
         if fire.state == "suspicious":
             advice = "优先派无人机核实热源，确认后再组织扑救；预先评估下风向隔离位置。"
         elif fire.intensity >= 70:
@@ -233,7 +284,6 @@ class AnalysisPage(ScrollPage):
         else:
             advice = "低强度火点：重点清理余火并持续监测，防止复燃。"
         self.strategy_text.setText(advice)
-        assigned = [r.id for r in e.robots if r.assigned_fire_id == fire.id]
-        self.force_text.setText("已分配：" + "、".join(assigned) if assigned else "该火点暂无已分配装备")
-        self.m_area.set_text(f"潜在燃烧区 {prediction['area']:.1f} ha")
+        self._refresh_forces(fire.id)
+        self.m_area.set_text(f"当前火点 {prediction['area']:.1f} ha")
         self.m_dir.set_text(f"蔓延方向 {e.wind_deg:.0f}°")

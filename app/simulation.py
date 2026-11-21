@@ -251,6 +251,51 @@ class FireSpreadModel:
                 "width_m": 12 if fire.intensity >= 70 else (8 if fire.intensity >= 35 else 6)}
 
 
+    def assess_all(self, fires, minutes: int, wind_deg: float, wind_speed: float,
+                   humidity: float) -> dict:
+        """合并活跃火点概率场，并避开其他预测燃烧区调整建议隔离线。
+
+        概率采用逐像元最大值（不作独立性假设）；隔离带为简化示意，
+        找不到不穿越燃烧区的线时保留原线并标记需人工复核。
+        """
+        active = [f for f in fires if f.state != "extinguished"]
+        assessments = {f.id: self.assess(f, minutes, wind_deg, wind_speed, humidity)
+                       for f in active}
+        if not assessments:
+            return {"grid": [], "fires": {}, "area": 0.0}
+        grids = [item["grid"] for item in assessments.values()]
+        h, w = len(grids[0]), len(grids[0][0])
+        combined = [[max(grid[y][x] for grid in grids) for x in range(w)]
+                    for y in range(h)]
+        dx, dy = math.cos(math.radians(wind_deg)), math.sin(math.radians(wind_deg))
+        for fire in active:
+            item = assessments[fire.id]
+            a, b = item["line"]
+            # 线段外移的同时检测全部火点的中高概率区，防止穿越相邻火场。
+            found = None
+            for step in range(31):
+                offset = step * 0.015
+                line = tuple((point[0] + dx * offset, point[1] + dy * offset)
+                             for point in (a, b))
+                if any(not (0 <= x <= 1 and 0 <= y <= 1) for x, y in line):
+                    break
+                safe = True
+                for i in range(41):
+                    t = i / 40
+                    x = line[0][0] * (1 - t) + line[1][0] * t
+                    y = line[0][1] * (1 - t) + line[1][1] * t
+                    if combined[min(h - 1, int(y * h))][min(w - 1, int(x * w))] >= 0.4:
+                        safe = False
+                        break
+                if safe:
+                    found = line
+                    break
+            item["line_conflict"] = found is None
+            item["line"] = found if found is not None else (a, b)
+        area = sum(v >= 0.4 for row in combined for v in row) * (1200 * 800 / (w * h)) / 10000
+        return {"grid": combined, "fires": assessments, "area": area}
+
+
 # ---------------------------------------------------------------------------
 # 运行状态
 # ---------------------------------------------------------------------------
