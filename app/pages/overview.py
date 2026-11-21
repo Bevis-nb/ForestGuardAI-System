@@ -45,8 +45,10 @@ class OverviewPage(ScrollPage):
         engine.tick.connect(self._refresh)
         engine.event_added.connect(self._on_event_added)
         engine.alert_added.connect(self._on_alert_added)
-        engine.recon_confirmed.connect(self._on_recon_confirmed)
-        engine.fire_appeared.connect(self._on_fire_appeared)
+        if hasattr(engine, "recon_confirmed"):
+            engine.recon_confirmed.connect(self._on_recon_confirmed)
+        if hasattr(engine, "fire_appeared"):
+            engine.fire_appeared.connect(self._on_fire_appeared)
         self._refresh()
 
     # ------------------------------------------------------------------
