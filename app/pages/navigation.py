@@ -32,7 +32,7 @@ class NavPage(ScrollPage):
         super().__init__(
             engine,
             "自主导航与路径规划",
-            "SLAM 融合建图 · 强化学习路径优化 · 风场/地形动态避险",
+            "演示栅格规划 · 每台设备独立配置 · 所有地图和设备共用路线",
         )
         self._sliders: list[QSlider] = []
         self.slam_pill = self.add_action(Pill("SLAM 建图中 87%", "success"))
@@ -63,7 +63,7 @@ class NavPage(ScrollPage):
         ctrl.addWidget(label("图层", "muted"))
         # 已移除激光点云与代价地图图层开关
         ctrl.addStretch(1)
-        self.nav_state = label("● 自主导航中 · 动态避障已开启", None,
+        self.nav_state = label("● 自主导航中 · 静态栅格避障", None,
                                color=theme.ACCENT, size=11.5, weight=700)
         ctrl.addWidget(self.nav_state)
         map_panel.addLayout(ctrl)
@@ -86,28 +86,14 @@ class NavPage(ScrollPage):
         safe.add_action(Pill("防护生效", "warning"))
         band = QHBoxLayout()
         band.setSpacing(10)
-        band.addWidget(label("动态避障", "muted"))
-        self.sw_avoid = ToggleSwitch(True)
-        band.addWidget(self.sw_avoid)
-        band.addSpacing(6)
-        band.addWidget(label("自动急停", "muted"))
-        self.sw_autostop = ToggleSwitch(True)
-        band.addWidget(self.sw_autostop)
-        band.addSpacing(6)
-        band.addWidget(label("高温阈值", "muted"))
-        self.temp_spin = QSpinBox()
-        self.temp_spin.setRange(45, 180)
-        self.temp_spin.setValue(85)
-        self.temp_spin.setSuffix(" ℃")
-        self.temp_spin.setFixedWidth(92)
-        band.addWidget(self.temp_spin)
+        band.addWidget(label("演示规则：机身温度超过 60℃ 或电量低于 30% 自动返航", "caption"))
         band.addStretch(1)
         self.estop_btn = button("紧急停止 E-STOP", "danger", "power", height=38, size=12.5,
                                 on_click=self._estop)
         self.estop_btn.setMinimumWidth(190)
         band.addWidget(self.estop_btn)
         safe.addLayout(band)
-        self.safe_log = label("最近事件：T+02:14 绕行倒木障碍（距 1.6 m），导航任务未中断", "caption")
+        self.safe_log = label("路线不可达时停止移动，不会直线穿越障碍。", "caption")
         safe.addWidget(self.safe_log)
         left.addWidget(safe)
         body.addLayout(left, 3)
@@ -116,7 +102,7 @@ class NavPage(ScrollPage):
         right = QVBoxLayout()
         right.setSpacing(12)
 
-        slam = Panel("建图状态", "Gmapping + 视觉回环", "layers")
+        slam = Panel("建图状态（演示）", "静态模拟栅格，非真实 SLAM", "layers")
         slam.add_action(Pill("精度 0.08 m", "info"))
         for key, val in (("关键帧 / 回环", "1,284 帧 / 12 次"), ("累计里程", "3.42 km")):
             slam.addWidget(KeyValueRow(key, val))
@@ -124,8 +110,12 @@ class NavPage(ScrollPage):
         slam.addWidget(ProgressLine("点云覆盖率", 92, theme.BLUE))
         right.addWidget(slam)
 
-        opt = Panel("路径优化 · 强化学习", "结合风向、坡度、热源的代价函数", "route")
-        opt.add_action(Pill("RL-A*", "purple"))
+        opt = Panel("设备路径规划", "设置仅作用于选中设备；任务、巡逻和返航共用", "route")
+        self.robot_picker = QComboBox()
+        for robot in engine.robots:
+            self.robot_picker.addItem(f"{robot.id} · {robot.name}", robot.id)
+        opt.addWidget(self.robot_picker)
+        opt.addWidget(label("路径为仿真示意；终点不可达时设备停止", "caption"))
 
         self.lbl_wind = label("", "caption")
         opt.addWidget(self._slider_row("风向", self.lbl_wind, -180, 180,
@@ -141,7 +131,7 @@ class NavPage(ScrollPage):
         algo_row.addWidget(label("规划算法", "muted"))
         algo_row.addStretch(1)
         self.algo = QComboBox()
-        self.algo.addItems(["RL-A* 强化学习优化", "A* 经典启发式", "Dijkstra 最短路径", "RRT* 采样规划"])
+        self.algo.addItems(["风险加权 A*（演示）", "A* 经典启发式", "Dijkstra 最短路径"])
         self.algo.setFixedWidth(180)
         algo_row.addWidget(self.algo)
         opt.addLayout(algo_row)
@@ -158,13 +148,10 @@ class NavPage(ScrollPage):
         self.root.addLayout(body, 1)
 
         # 已移除激光点云与代价地图开关
-        self.temp_spin.valueChanged.connect(self._on_threshold)
-        self._build_comparison()
-        self._update_slider_labels()
-        self.gain_pill.set_kind("success")
-        self.gain_pill.set_text("RL 策略已生效 · 风险下降 5 分 / 耗时 -1 s")
+        self.algo.currentIndexChanged.connect(self._on_param)
+        self.robot_picker.currentIndexChanged.connect(self._on_picker)
         engine.tick.connect(self._refresh)
-        self._refresh()
+        self._on_picker()
 
     # ------------------------------------------------------------------
     def _slider_row(self, title: str, value_label, lo: int, hi: int, value: int, callback) -> QWidget:
@@ -188,9 +175,18 @@ class NavPage(ScrollPage):
 
     def _on_param(self, *_):
         self._update_slider_labels()
-        if hasattr(self, "gain_pill"):
-            self.gain_pill.set_kind("info")
-            self.gain_pill.set_text("参数已实时更新")
+        if not hasattr(self, "algo") or not hasattr(self, "gain_pill") or not self._selected_robot_id:
+            return
+        self.engine.configure_robot_route(self._selected_robot_id,
+            ["RL-A*", "A*", "Dijkstra"][self.algo.currentIndex()],
+            self.slider_风向.value() + 180, self.slider_风速.value() / 10,
+            self.slider_地形坡度.value() / 100)
+        self._refresh()
+
+    def _on_picker(self, *_):
+        rid = self.robot_picker.currentData()
+        if rid:
+            self._on_robot_selected(rid)
 
     def _update_slider_labels(self):
         if not hasattr(self, "slider_风向"):
@@ -203,75 +199,23 @@ class NavPage(ScrollPage):
         self.lbl_slope.setText(f"{slope * 100:.0f}%")
 
     def _build_comparison(self):
-        rows = [
-            ("路径长度", f"{self.engine.baseline.length_m:.0f} m", f"{self.engine.plan.length_m:.0f} m"),
-            ("预计耗时", f"{self.engine.baseline.eta_s:.0f} s", f"{self.engine.plan.eta_s:.0f} s"),
-            ("能耗预估", f"{self.engine.baseline.energy:.1f} %", f"{self.engine.plan.energy:.1f} %"),
-            ("风险评分", f"{self.engine.baseline.risk * 100:.0f}", f"{self.engine.plan.risk * 100:.0f}"),
-        ]
         while self.cmp_box.count():
             item = self.cmp_box.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-            elif item.layout():
-                while item.layout().count():
-                    sub = item.layout().takeAt(0)
-                    if sub.widget():
-                        sub.widget().deleteLater()
-        header = QWidget()
-        hl = QHBoxLayout(header)
-        hl.setContentsMargins(0, 0, 0, 0)
-        for text, stretch, align in (("指标", 2, Qt.AlignmentFlag.AlignLeft),
-                                     ("常规 A*", 1, Qt.AlignmentFlag.AlignRight),
-                                     ("RL 优化", 1, Qt.AlignmentFlag.AlignRight)):
-            hl.addWidget(label(text, "caption"), stretch, align)
-        self.cmp_box.addWidget(header)
-        for name, base, opt in rows:
-            row = QWidget()
-            rl = QHBoxLayout(row)
-            rl.setContentsMargins(0, 1, 0, 1)
-            rl.addWidget(label(name, "muted"), 2)
-            rl.addWidget(label(base, None, color=theme.MUTED_LIGHT, size=11.5), 1,
-                         Qt.AlignmentFlag.AlignRight)
-            rl.addWidget(label(opt, None, color=theme.ACCENT_DARK, size=11.5, weight=700), 1,
-                         Qt.AlignmentFlag.AlignRight)
-            self.cmp_box.addWidget(row)
-
-    # ------------------------------------------------------------------
-    def _replan(self):
-        wind_deg = self.slider_风向.value() + 180
-        wspeed = self.slider_风速.value() / 10
-        slope = self.slider_地形坡度.value() / 100
-        algo = ["RL-A*", "A*", "Dijkstra", "RRT*"][self.algo.currentIndex()]
-        r = next((x for x in self.engine.robots if x.id == self._selected_robot_id), self.engine.robots[0])
-        start = (r.x, r.y)
-        if r.mission == "returning":
-            goal = (r.home_x, r.home_y)
-        elif r.mission == "patrol":
-            t = ((self.engine.sim_time + (0 if r.id.endswith("1") else 50)) % 100) / 100.0
-            cx = 0.10 + 0.80 * abs(2 * ((t * 5) % 1.0) - 1.0)
-            cy = 0.14 + 0.72 * t
-            goal = (cx, cy)
-        elif r.mission in ("en_route", "spraying", "recon"):
-            goal = (r.target_x, r.target_y)
+            if item.widget():
+                item.widget().deleteLater()
+        r = next((x for x in self.engine.robots if x.id == self._selected_robot_id), None)
+        if r is None:
+            return
+        plan = r.route_plan
+        if r.route_failed:
+            text = "路线不可达：设备已停止，等待目标或算法变更"
+        elif plan is None:
+            text = "当前无移动任务；新任务将使用此设备的设置"
         else:
-            goal = (r.home_x, r.home_y)
-        plan = self.engine.replan(wind_deg, wspeed, slope, algo, start=start, goal=goal)
-        risk_drop = (self.engine.baseline.risk - plan.risk) * 100
-        self._build_comparison()
-        if risk_drop > 0.4:
-            self.gain_pill.set_kind("success")
-            self.gain_pill.set_text(
-                f"风险评分下降 {risk_drop:.0f} 分 · 耗时 {plan.eta_s:.0f}s"
-            )
-        else:
-            self.gain_pill.set_kind("warning")
-            self.gain_pill.set_text("当前参数下常规算法更优")
-        self.engine.push_event(
-            f"{algo} 路径重算完成：{plan.length_m:.0f} m / 预计 {plan.eta_s:.0f} s，已下发 UGV-01", "success")
-        self.map.set_static_dirty()
-        toast(self, f"最优路径已生成：{plan.length_m:.0f} m，预计 {plan.eta_s:.0f} 秒到达")
+            text = f"规划长度 {plan.length_m:.0f} m · 风险评分 {plan.risk * 100:.0f} · 剩余约 {r.eta_seconds:.0f} 步"
+        self.cmp_box.addWidget(label(text, "caption"))
+        self.gain_pill.set_kind("warning" if r.route_failed else "info")
+        self.gain_pill.set_text("路径不可达" if r.route_failed else "设备路线已同步")
 
     def _restart_slam(self):
         self.slam_pill.set_text("SLAM 重建中 12%")
@@ -298,19 +242,31 @@ class NavPage(ScrollPage):
             self.estop_btn.setIcon(icons.icon("power", "#FFFFFF", 16))
             self.estop_btn.style().unpolish(self.estop_btn)
             self.estop_btn.style().polish(self.estop_btn)
-            self.nav_state.setText("● 自主导航中 · 动态避障已开启")
+            self.nav_state.setText("● 自主导航中 · 静态栅格避障")
             self.nav_state.setStyleSheet(f"color:{theme.ACCENT}; font-size:11.5px; font-weight:700;")
             self.engine.push_event("急停解除，导航任务恢复执行", "success")
             toast(self, "急停解除，任务已恢复")
 
-    def _on_threshold(self, value: int):
-        self.safe_log.setText(f"最近事件：温度阈值调整为 {value} ℃，超限将自动刹停并请求指挥确认")
-
     def _on_robot_selected(self, rid: str):
+        r = next((x for x in self.engine.robots if x.id == rid), None)
+        if r is None:
+            return
         self._selected_robot_id = rid
+        self.map.selected_robot = rid
         self.map.show_path = True
+        controls = (self.robot_picker, self.algo, self.slider_风向, self.slider_风速, self.slider_地形坡度)
+        for control in controls:
+            control.blockSignals(True)
+        self.robot_picker.setCurrentIndex(self.robot_picker.findData(rid))
+        self.algo.setCurrentIndex(["RL-A*", "A*", "Dijkstra"].index(r.route_algo))
+        self.slider_风向.setValue(round(r.route_wind) - 180)
+        self.slider_风速.setValue(round(r.route_wind_speed * 10))
+        self.slider_地形坡度.setValue(round(r.route_slope * 100))
+        for control in controls:
+            control.blockSignals(False)
+        self._update_slider_labels()
         self._refresh()
-        self._replan()
+        self.map.update()
 
     def _refresh(self):
         if not self._selected_robot_id:
@@ -318,11 +274,13 @@ class NavPage(ScrollPage):
             return
         r = next((x for x in self.engine.robots if x.id == self._selected_robot_id), self.engine.robots[0])
         eta = f"ETA {r.eta_seconds:.0f}s ({r.eta_status})" if r.mission == "en_route" else r.task
+        self._build_comparison()
         self.robot_info_label.setText(
             f"选中装备 {r.id} ({r.name}) · 电量 {r.battery:.0f}% · 机身温度 {r.temp:.1f}℃ · "
             f"速度 {r.speed:.1f} m/s · 高度 {r.altitude:.0f} m · {eta}"
         )
         e = self.engine
-        self.t_speed.set_text("速度 1.8 m/s" if not e.estop else "速度 0.0 m/s（急停）")
-        self.t_head.set_text(f"航向 {(e.wind_deg + 174) % 360:03.0f}°")
+        self.t_speed.set_text(f"速度 {r.speed:.1f} m/s" if not e.estop else "速度 0.0 m/s（急停）")
+        import math
+        self.t_head.set_text(f"航向 {math.degrees(r.heading) % 360:03.0f}°")
         self.t_obs.set_text("最近障碍 1.6 m" if not e.estop else "已制动 · 安全")

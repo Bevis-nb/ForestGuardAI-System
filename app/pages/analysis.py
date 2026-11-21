@@ -272,7 +272,8 @@ class AnalysisPage(ScrollPage):
         self.force_strip.setVisible(bool(entries))
         for r in entries:
             card, task, detail = self._force_widgets[r.id]
-            stage = {"recon": "侦察中", "en_route": "赶赴中", "spraying": "现场作业"}.get(r.mission, r.status_text)
+            stage = ("路径不可达" if r.route_failed else
+                     {"recon": "侦察中", "en_route": "赶赴中", "spraying": "现场作业"}.get(r.mission, r.status_text))
             task.setText(r.task)
             task.setToolTip(r.task)
             detail.setText(f"{stage} · 电量 {r.battery:.0f}%")

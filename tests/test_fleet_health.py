@@ -31,7 +31,7 @@ class FleetHealthTests(unittest.TestCase):
     def test_live_sort_colours_filter_and_selection(self):
         low, hot, warning = self.engine.robots[0], self.engine.robots[8], self.engine.robots[1]
         low.battery = 10
-        hot.temp = 55
+        hot.temp = 91
         warning.battery = 30
         self.page._select(low.id)
         self.engine.tick.emit()
@@ -41,6 +41,9 @@ class FleetHealthTests(unittest.TestCase):
         self.assertIn(theme.RED_SOFT, self.page.cards[hot.id].styleSheet())
         self.assertIn(theme.AMBER_SOFT, self.page.cards[warning.id].styleSheet())
         self.assertEqual(self.page.selected, low.id)
+        hot.temp = 90
+        self.engine.tick.emit()
+        self.assertIn(theme.AMBER_SOFT, self.page.cards[hot.id].styleSheet())
         low.battery = 80
         hot.temp = 30
         self.engine.tick.emit()

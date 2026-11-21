@@ -304,7 +304,7 @@ class TerrainMap(QWidget):
             self._paint_heat(p, r)
         self._paint_bases(p, r)
         self._paint_fire(p, r)
-        if self.show_path:
+        if self.show_path or (self._show_robots and self.mode != "navigation"):
             self._paint_path(p, r)
         self._paint_robots(p, r)
         p.restore()
@@ -465,53 +465,20 @@ class TerrainMap(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
 
     def _paint_path(self, p: QPainter, r: QRectF):
-        path_pts = [self.pt(xy) for xy in self.engine.plan.path]
-        path = QPainterPath(path_pts[0])
-        for i in range(1, len(path_pts)):
-            a, b = path_pts[i - 1], path_pts[i]
-            mid = (a + b) / 2
-            path.quadTo(a, mid)
-
-        pen = QPen(QColor(255, 255, 255, 200), 7)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(path)
-
-        grad = QLinearGradient(path_pts[0], path_pts[-1])
-        grad.setColorAt(0.0, C(theme.ACCENT))
-        grad.setColorAt(0.6, C(theme.ACCENT_LIGHT))
-        grad.setColorAt(1.0, C(theme.AMBER))
-        pen = QPen(QBrush(grad), 3.2)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setStyle(Qt.PenStyle.DashLine)
-        pen.setDashPattern([6, 4])
-        pen.setDashOffset(-self.phase * 10)
-        p.setPen(pen)
-        p.drawPath(path)
-
-        start = path_pts[0]
-        end = path_pts[-1]
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(C("#FFFFFF"))
-        p.drawEllipse(start, 8, 8)
-        p.setBrush(C(theme.ACCENT))
-        p.drawEllipse(start, 4.6, 4.6)
-        p.setFont(_font(9, 700))
-        p.setPen(C(theme.ACCENT_DARK))
-        p.drawText(QPointF(start.x() + 12, start.y() + 4), "起点")
-
-        # 火点目标标记
-        p.setBrush(QColor(255, 255, 255, 220))
-        p.setPen(QPen(C(theme.AMBER), 2))
-        p.drawEllipse(end, 9, 9)
-        p.setPen(QPen(C(theme.AMBER), 2))
-        p.drawLine(end + QPointF(-13, 0), end + QPointF(-5, 0))
-        p.drawLine(end + QPointF(5, 0), end + QPointF(13, 0))
-        p.drawLine(end + QPointF(0, -13), end + QPointF(0, -5))
-        p.drawLine(end + QPointF(0, 5), end + QPointF(0, 13))
-
-        # 沿路径运动的机器人（已移除假循环动画，由 SimEngine 实时驱动）
+        robots = ([rb for rb in self.engine.robots if rb.id == self.selected_robot]
+                  if self.mode == "navigation" else self.engine.robots)
+        for robot in robots:
+            points = self.engine.remaining_route(robot)
+            if len(points) < 2:
+                continue
+            path = QPainterPath(self.pt(points[0]))
+            for point in points[1:]:
+                path.lineTo(self.pt(point))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            pen = QPen(QColor(theme.ACCENT if robot.kind == "UGV" else theme.BLUE),
+                       3 if self.mode == "navigation" else 1.5, Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            p.drawPath(path)
 
     def _paint_lidar(self, p: QPainter, r: QRectF):
         robot = next((x for x in self.engine.robots if x.id == "UGV-01"), self.engine.robots[0])
@@ -543,12 +510,9 @@ class TerrainMap(QWidget):
     def _paint_robots(self, p: QPainter, r: QRectF):
         if not self._show_robots:
             return
-        fire_pt = self.pt(self.engine.fire_origin)
         for robot in self.engine.robots:
-            if self.mode == "navigation" and robot.kind == "UGV":
-                continue
             pos = self.pt((robot.x, robot.y))
-            if robot.battery < 20 or robot.temp > 50 or robot.status == "offline":
+            if robot.battery <= 20 or robot.temp > 90 or robot.status == "offline":
                 color = theme.RED          # 危险中
             elif robot.mission in ("en_route", "spraying", "recon"):
                 color = "#F59E0B"          # 被调度中
@@ -557,16 +521,10 @@ class TerrainMap(QWidget):
             else:
                 color = theme.BLUE         # 待命 / 充电中
 
-            # 赶赴火点虚线轨迹
-            if robot.mission == "en_route":
-                tpt = self.pt((robot.target_x, robot.target_y))
-                pen = QPen(QColor(color), 1.4, Qt.PenStyle.DashLine)
-                pen.setDashPattern([4, 4])
-                p.setPen(pen)
-                p.drawLine(pos, tpt)
-
             # 灭火喷洒水柱 / 粒子动画
-            if robot.spraying and self.engine.fire.state != "extinguished":
+            spray_fire = self.engine.spray_target(robot)
+            if spray_fire is not None:
+                fire_pt = self.pt(spray_fire.origin)
                 p.setPen(QPen(QColor(24, 174, 196, 160), 2.2))
                 p.drawLine(pos, fire_pt)
                 p.setPen(Qt.PenStyle.NoPen)
@@ -1567,7 +1525,7 @@ class FirstPerson3DView(QWidget):
                     p.drawText(QPointF(sx - 28, sy - 18), "火点已扑灭 ✓")
 
         # 第一人称喷水灭火水柱特效
-        if self.spraying:
+        if self.robot is not None and self.engine.spray_target(self.robot) is not None:
             p.setPen(QPen(QColor(56, 189, 248, 190), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             p.drawLine(QPointF(w * 0.5, h), QPointF(w * 0.5, horizon_y + 12))
             p.setPen(Qt.PenStyle.NoPen)

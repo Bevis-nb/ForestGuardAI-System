@@ -84,7 +84,7 @@ class RobotCard(QFrame):
         self.signal_label = label(f"信号 {robot.signal:.0f}%", "caption")
         foot.addWidget(self.signal_label)
         self.temp_label = label(f"{robot.temp:.1f}℃", "caption",
-                                color=theme.RED if robot.temp > 42 else theme.MUTED)
+                                color=theme.RED if robot.temp > 90 else theme.AMBER if robot.temp > 45 else theme.MUTED)
         foot.addWidget(self.temp_label)
         lay.addLayout(foot)
 
@@ -123,7 +123,7 @@ class RobotCard(QFrame):
         self.signal_label.setText(f"信号 {r.signal:.0f}%")
         self.temp_label.setText(f"{r.temp:.1f}℃")
         self.temp_label.setStyleSheet(
-            f"color:{theme.RED if r.temp >= 55 else theme.AMBER if r.temp > 45 else theme.MUTED}; font-size:11px;"
+            f"color:{theme.RED if r.temp > 90 else theme.AMBER if r.temp > 45 else theme.MUTED}; font-size:11px;"
         )
 
     def mousePressEvent(self, event):
@@ -445,7 +445,7 @@ class RemoteControlDialog(QDialog):
             return
         r = self.robot
         if text == "返航":
-            r.status = "returning"
+            self.engine.return_robot(r)
             self.log.setText("返航指令已下发，正在规划安全航路…")
             self.engine.push_event(f"{r.id} 由遥控终端下发返航指令", "info")
         elif text == "急停":
@@ -453,8 +453,7 @@ class RemoteControlDialog(QDialog):
             self.engine.estop = True
             self.engine.push_event(f"{r.id} 遥控急停，链路保持", "critical")
         elif text in ("开启喷洒", "关闭喷洒"):
-            self.feed.spraying = (text == "开启喷洒")
-            self.log.setText(f"{r.id} 载荷状态：{text}")
+            self.log.setText("喷水由系统根据火点距离及装备状态自动控制，画面显示实际仿真状态。")
         else:
             if text in ("左移", "左旋"):
                 self.feed.pan(dyaw=-0.16)
@@ -682,23 +681,23 @@ class FleetPage(ScrollPage):
 
     def _return(self):
         robot = getattr(self, "_robot", self.engine.robots[0])
-        robot.status = "returning"
+        self.engine.return_robot(robot)
         self.engine.push_event(f"{robot.id} 收到返航指令，正在规划安全路线", "info")
         toast(self, f"{robot.id} 已开始返航")
         self._refresh()
 
     def _charge(self):
         robot = getattr(self, "_robot", self.engine.robots[0])
-        robot.status = "charging"
-        toast(self, f"{robot.id} 已进入机巢充电")
+        self.engine.return_robot(robot, refill=True)
+        toast(self, f"{robot.id} 正在返回基地充电")
         self._refresh()
 
     def _charge_all(self):
         for r in self.engine.robots:
             if r.status in ("standby", "returning"):
-                r.status = "charging"
+                self.engine.return_robot(r, refill=True)
         self.engine.push_event("指挥终端下发批量充电指令", "info")
-        toast(self, "待命装备已进入机巢充电")
+        toast(self, "待命装备正在返回基地充电")
 
     def _add(self):
         toast(self, "新装备接入需在机巢完成配对（演示环境）", "info")
