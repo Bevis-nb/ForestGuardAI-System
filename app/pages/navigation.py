@@ -52,10 +52,11 @@ class NavPage(ScrollPage):
         map_panel.add_action(kv_chip("cpu", "关键帧 1,284"))
         self.map = TerrainMap(engine, "navigation")
         self.map.setMinimumHeight(372)
-        self._selected_robot_id = "UGV-01"
+        self.map.show_path = False
+        self._selected_robot_id = None
         self.map.robot_selected.connect(self._on_robot_selected)
         map_panel.add(self.map, 1)
-        self.robot_info_label = label("点击地图上的设备查看单体状态（当前：UGV-01）", "caption", color=theme.TEXT_SOFT)
+        self.robot_info_label = label("点击地图上的设备查看单体状态与规划路径", "caption", color=theme.TEXT_SOFT)
         map_panel.add(self.robot_info_label)
 
         ctrl = QHBoxLayout()
@@ -306,10 +307,14 @@ class NavPage(ScrollPage):
 
     def _on_robot_selected(self, rid: str):
         self._selected_robot_id = rid
+        self.map.show_path = True
         self._refresh()
         self._replan()
 
     def _refresh(self):
+        if not self._selected_robot_id:
+            self.robot_info_label.setText("点击地图上的设备查看单体状态与规划路径")
+            return
         r = next((x for x in self.engine.robots if x.id == self._selected_robot_id), self.engine.robots[0])
         eta = f"ETA {r.eta_seconds:.0f}s ({r.eta_status})" if r.mission == "en_route" else r.task
         self.robot_info_label.setText(

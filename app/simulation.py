@@ -935,16 +935,21 @@ class SimEngine(QObject):
         self.alert_added.emit(al)
 
     def replan(self, wind_deg: float | None = None, wind_speed: float | None = None,
-               slope: float | None = None, algo: str = "RL-A*") -> PathPlan:
+               slope: float | None = None, algo: str = "RL-A*",
+               start: tuple[float, float] | None = None,
+               goal: tuple[float, float] | None = None) -> PathPlan:
         if wind_deg is not None:
             self.wind_deg = wind_deg
         if wind_speed is not None:
             self.wind_speed = wind_speed
         if slope is not None:
             self.slope = slope
-        self.plan = self.planner.plan((0.16, 0.78), (0.52, 0.62), self.wind_deg,
+        fx, fy = self.fire_origin
+        st = start or (0.16, 0.78)
+        gl = goal or (round(max(0.08, fx - 0.06), 3), round(min(0.88, fy + 0.05), 3))
+        self.plan = self.planner.plan(st, gl, self.wind_deg,
                                       self.wind_speed, self.slope, self.fire_origin, algo)
-        self.baseline = self.planner.plan((0.16, 0.78), (0.52, 0.62), self.wind_deg,
+        self.baseline = self.planner.plan(st, gl, self.wind_deg,
                                           self.wind_speed, self.slope, self.fire_origin, algo="A*")
         return self.plan
 
