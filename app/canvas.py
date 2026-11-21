@@ -66,7 +66,7 @@ class TerrainMap(QWidget):
         self.show_costmap = mode == "navigation"
         self.show_heat = mode == "analysis"
         self.show_legend = show_legend
-        self.show_path = mode in ("overview", "navigation")
+        self.show_path = mode == "navigation"
         self.fire_frame = 0
         self.phase = 0.0
         self.minutes = 30
@@ -100,7 +100,7 @@ class TerrainMap(QWidget):
         self.show_lidar = mode == "navigation"
         self.show_costmap = mode == "navigation"
         self.show_heat = mode == "analysis"
-        self.show_path = mode in ("overview", "navigation")
+        self.show_path = mode == "navigation"
         self.update()
 
     def set_minutes(self, minutes: int):
@@ -520,8 +520,6 @@ class TerrainMap(QWidget):
             return
         fire_pt = self.pt(self.engine.fire_origin)
         for robot in self.engine.robots:
-            if robot.mission == "idle" and robot.status in ("standby", "charging"):
-                continue  # 停靠在基地的装备已聚合显示在基地图标中
             if self.mode == "navigation" and robot.kind == "UGV":
                 continue
             pos = self.pt((robot.x, robot.y))
