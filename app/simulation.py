@@ -340,6 +340,7 @@ class SimEngine(QObject):
         self.last_report: dict | None = None
         self._milestones: set[int] = set()
         self._dispatch_timer = 0.0
+        self.fire_confirmed = Signal if False else None
         self.auto_avoid = True
         self.estop = False
         self.formation = "楔形推进"
@@ -574,6 +575,28 @@ class SimEngine(QObject):
     def _advance_robot(self, r: Robot):
         if self.estop or r.status not in ("on_mission", "returning"):
             return
+        if r.mission == "recon":
+            tx, ty = r.target_x, r.target_y
+            dx, dy = tx - r.x, ty - r.y
+            dist = math.hypot(dx, dy)
+            if dist > 0.03:
+                r.heading = math.atan2(dy, dx)
+                r.x = min(0.94, max(0.04, r.x + (dx / dist) * 0.026))
+                r.y = min(0.94, max(0.04, r.y + (dy / dist) * 0.026))
+            else:
+                r.mission = "idle"
+                r.arrived = True
+                if self.fire.state == "suspicious":
+                    self.fire.state = "spreading"
+                    self.push_alert(
+                        f"无人机 {r.id} 现场勘察确认：火点 {self.fire.id} 属实！",
+                        f"热成像温度 418℃，建议立即调度灭火编队前往扑救",
+                        "critical", f"{r.id} 空中侦察",
+                    )
+                    self.push_event(f"{r.id} 抵近勘察确认火点 {self.fire.id} 属实，等待指挥员确认调度方案", "warning")
+                    self.recon_confirmed.emit(self.fire)
+            return
+
         if r.mission in ("en_route", "spraying"):
             tx, ty = r.target_x, r.target_y
             dx, dy = tx - r.x, ty - r.y
@@ -612,7 +635,108 @@ class SimEngine(QObject):
                 r.x = min(0.9, max(0.08, r.x + self.rng.uniform(-0.002, 0.002)))
                 r.y = min(0.9, max(0.08, r.y + self.rng.uniform(-0.002, 0.002)))
 
-    # ---------------- 随机起火与自主协同调度 ----------------
+    def trigger_suspicious_fire(self, origin: tuple[float, float] | None = None) -> FireIncident:
+        """流程二：发现可疑火点 → 预警通知 → 派无人机前往勘察。"""
+        if origin is None:
+            ox = round(self.rng.uniform(0.28, 0.80), 3)
+            oy = round(self.rng.uniform(0.26, 0.76), 3)
+            origin = (ox, oy)
+        self.fire_counter += 1
+        fid = f"A-{self.fire_counter:02d}"
+        intensity = round(self.rng.uniform(48.0, 68.0), 1)
+        area = round(self.rng.uniform(4.2, 9.5), 1)
+        self.fire_origin = origin
+        self.fire = FireIncident(
+            id=fid, origin=origin, intensity=intensity, area=area,
+            containment=15.0, state="suspicious", ignited_at=self.sim_time,
+            peak_intensity=intensity, peak_area=area,
+            history=[intensity], area_history=[area],
+        )
+        self.fire_area = area
+        self.containment = 15.0
+        self._milestones.clear()
+        self.last_report = None
+        self.replan()
+
+        # 选最近可用无人机前去勘察
+        uavs = [r for r in self.robots if r.kind == "UAV" and r.status != "offline"]
+        scout = min(uavs, key=lambda r: math.hypot(r.x - origin[0], r.y - origin[1])) if uavs else self.robots[0]
+        scout.status = "on_mission"
+        scout.mission = "recon"
+        scout.task = f"勘察可疑火点 {fid}"
+        scout.target_x, scout.target_y = origin
+        scout.spraying = False
+
+        self.push_alert(
+            f"火灾预警：发现可疑火点 {fid}",
+            f"卫星/传感器发现异常热斑 ({origin[0]:.2f}, {origin[1]:.2f})，已指派 {scout.id} 前往勘察",
+            "warning", "火灾预警系统",
+        )
+        self.push_event(f"预警：{scout.id} 正在飞往可疑火点 {fid} 进行现场核查…", "info")
+        return self.fire
+
+    def recommend_dispatch(self) -> list[dict]:
+        """仅生成推荐调度方案与评分（不立即派单），供人工确认或自动执行。"""
+        fx, fy = self.fire_origin
+        candidates = [r for r in self.robots if r.status != "offline" and r.battery >= 18.0]
+        plan: list[dict] = []
+
+        def score_robot(r: Robot, role: str) -> tuple[float, dict]:
+            dist = math.hypot(r.x - fx, r.y - fy)
+            dist_score = max(0.0, 100.0 * (1.0 - dist / 1.2))
+            cap_score = (100.0 if r.kind == "UAV" else 35.0) if role == "recon" else (100.0 if r.kind == "UGV" else 55.0)
+            total = 0.40 * cap_score + 0.25 * dist_score + 0.20 * r.battery + 0.15 * r.payload
+            return round(total, 1), {"cap": round(cap_score, 0), "dist": round(dist, 2), "bat": round(r.battery, 0), "pay": round(r.payload, 0)}
+
+        uavs = sorted([r for r in candidates if r.kind == "UAV"], key=lambda r: score_robot(r, "recon")[0], reverse=True)
+        ugvs = sorted([r for r in candidates if r.kind == "UGV"], key=lambda r: score_robot(r, "suppress")[0], reverse=True)
+
+        selected: list[tuple[Robot, str, str, tuple[float, float]]] = []
+        if len(uavs) >= 1:
+            selected.append((uavs[0], "recon", "空中侦察 · 热源锁定", (fx - 0.04, fy - 0.06)))
+        if len(uavs) >= 2:
+            selected.append((uavs[1], "recon", "空中洒水 · 压制火头", (fx + 0.05, fy - 0.05)))
+        offsets = [(-0.06, 0.04), (0.06, 0.04), (0.0, 0.07)]
+        ugv_tasks = ["火线正面强攻", "东侧隔离带阻断", "南线洒水降温"]
+        for idx, r in enumerate(ugvs[:3]):
+            ox, oy = offsets[idx]
+            selected.append((r, "suppress", ugv_tasks[idx], (fx + ox, fy + oy)))
+
+        for r, role, task_name, (tx, ty) in selected:
+            sc, bd = score_robot(r, role)
+            plan.append({
+                "robot_id": r.id, "name": r.name, "kind": r.kind,
+                "task": task_name, "score": sc,
+                "tx": min(0.92, max(0.06, tx)), "ty": min(0.92, max(0.06, ty)),
+                "reason": f"综合 {sc} 分（能力 {bd['cap']:.0f} · 距火点 {bd['dist']:.2f} · 电量 {bd['bat']:.0f}% · 载荷 {bd['pay']:.0f}%）",
+            })
+        self.dispatch_plan = plan
+        return plan
+
+    def confirm_dispatch(self, selected_ids: list[str] | None = None) -> list[dict]:
+        """按人工确认/勾选的装备列表正式下发扑救任务。"""
+        if not self.dispatch_plan:
+            self.recommend_dispatch()
+        chosen = [p for p in self.dispatch_plan if selected_ids is None or p["robot_id"] in selected_ids]
+        for r in self.robots:
+            if r.status not in ("offline", "charging"):
+                r.spraying = False
+                r.mission = "idle"
+        id_map = {r.id: r for r in self.robots}
+        for p in chosen:
+            r = id_map.get(p["robot_id"])
+            if r:
+                r.status = "on_mission"
+                r.mission = "en_route"
+                r.task = p["task"]
+                r.target_x = p["tx"]
+                r.target_y = p["ty"]
+                r.arrived = False
+        self.dispatch_plan = chosen
+        if chosen:
+            names = "、".join(p["robot_id"] for p in chosen)
+            self.push_event(f"指挥员已确认调度：{names} 前往扑救火点 {self.fire.id}", "success")
+        return chosen
     def ignite_random_fire(self, origin: tuple[float, float] | None = None) -> FireIncident:
         """随机生成新火点，触发告警并由系统自主决策调度空地协同编队。"""
         if origin is None:

@@ -33,10 +33,12 @@ class OverviewPage(ScrollPage):
         self.add_action(self.fire_pill)
         self.speed_btn = button("1× 倍速", "ghost", "clock", height=34, on_click=self._cycle_speed)
         self.add_action(self.speed_btn)
-        self.add_action(button("随机起火", "dangerSoft", "flame", height=34,
+        self.add_action(button("可疑火点(预警)", "soft", "radar", height=34,
+                               on_click=self._trigger_suspicious))
+        self.add_action(button("随机起火(突发)", "dangerSoft", "flame", height=34,
                                on_click=self._ignite_random))
-        self.add_action(button("自主扑救", "primary", "sparkles", height=34,
-                               on_click=self._quick_plan))
+        self.add_action(button("调度确认", "primary", "sparkles", height=34,
+                               on_click=self._open_dispatch_dialog))
 
         self._build_stats()
         self._build_middle()
@@ -47,6 +49,7 @@ class OverviewPage(ScrollPage):
         engine.tick.connect(self._refresh)
         engine.event_added.connect(self._on_event_added)
         engine.alert_added.connect(self._on_alert_added)
+        engine.recon_confirmed.connect(self._on_recon_confirmed)
         self._refresh()
 
     # ------------------------------------------------------------------
@@ -211,6 +214,7 @@ class OverviewPage(ScrollPage):
         self.bar_wind.set_value(min(100, e.wind_speed / 10 * 100))
         self.contain_pill.set_text(f"控制率 {e.containment:.1f}%")
         st_map = {
+            "suspicious": ("预警勘察中", "warning"),
             "spreading": ("火势蔓延", "critical"),
             "suppressing": ("扑救压制中", "warning"),
             "contained": ("火势已控", "info"),
@@ -228,21 +232,58 @@ class OverviewPage(ScrollPage):
             self._refresh_robot_rows()
 
     # ------------------------------------------------------------------
+    def _trigger_suspicious(self):
+        f = self.engine.trigger_suspicious_fire()
+        self.map.highlight_fire()
+        toast(self, f"预警：发现可疑火点 {f.id}，已派无人机前往勘察", "warning")
+
+    def _on_recon_confirmed(self, _fire=None):
+        if self.isVisible():
+            self._open_dispatch_dialog()
+
     def _ignite_random(self):
         f = self.engine.ignite_random_fire()
         self.map.highlight_fire()
-        toast(self, f"火点 {f.id} 已触发，系统已自主指派空地编队前往扑救", "warning")
+        toast(self, f"突发火情 {f.id}！请确认调度方案", "error")
+        self._open_dispatch_dialog()
+
+    def _open_dispatch_dialog(self):
+        from PySide6.QtWidgets import QCheckBox, QDialog
+        plan = self.engine.recommend_dispatch()
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"设备调度推荐与人工确认 · 火点 {self.engine.fire.id}")
+        dlg.setMinimumWidth(520)
+        lay = QVBoxLayout(dlg)
+        lay.setSpacing(10)
+        lay.addWidget(label(
+            f"火点 {self.engine.fire.id}（强度 {self.engine.fire.intensity:.0f}% · 面积 {self.engine.fire.area:.1f} ha）",
+            None, size=14, weight=700,
+        ))
+        lay.addWidget(label(
+            "算法评判标准：能力匹配 40% + 距火点距离 25% + 剩余电量 20% + 载荷/水量 15%",
+            "caption", color=theme.MUTED,
+        ))
+        checks: list[tuple[str, QCheckBox]] = []
+        for p in plan:
+            cb = QCheckBox(f"[{p['robot_id']}] {p['task']}  —  {p['reason']}")
+            cb.setChecked(True)
+            lay.addWidget(cb)
+            checks.append((p["robot_id"], cb))
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        btns.addWidget(button("取消", "ghost", height=32, on_click=dlg.reject))
+        btns.addWidget(button("确认并下发扑救", "primary", "sparkles", height=32, on_click=dlg.accept))
+        lay.addLayout(btns)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            chosen = [rid for rid, cb in checks if cb.isChecked()]
+            self.engine.confirm_dispatch(chosen)
+            toast(self, f"已按人工确认方案下发 {len(chosen)} 台装备前往扑救", "success")
 
     def _cycle_speed(self):
         nxt = {1: 2, 2: 4, 4: 1}.get(self.engine.sim_speed, 1)
         self.engine.sim_speed = nxt
         self.speed_btn.setText(f"{nxt}× 倍速")
         toast(self, f"仿真推演速度已切换为 {nxt}×", "info")
-
-    def _quick_plan(self):
-        plan = self.engine.evaluate_and_dispatch()
-        names = "、".join(p["robot_id"] for p in plan)
-        toast(self, f"自主协同调度完成：已指派 {names} 扑救 {self.engine.fire.id}", "success")
 
     def _go_alerts(self):
         window = self.window()
