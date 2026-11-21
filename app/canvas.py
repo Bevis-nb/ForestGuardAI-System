@@ -524,6 +524,8 @@ class TerrainMap(QWidget):
             return
         fire_pt = self.pt(self.engine.fire_origin)
         for robot in self.engine.robots:
+            if robot.mission == "idle" and robot.status in ("standby", "charging"):
+                continue  # 停靠在基地的装备已聚合显示在基地图标中
             if self.mode == "navigation" and robot.kind == "UGV":
                 continue
             pos = self.pt((robot.x, robot.y))
