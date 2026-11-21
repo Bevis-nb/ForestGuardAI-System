@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget
 
 from .. import theme
 from ..canvas import TerrainMap, VideoFeed
@@ -188,26 +188,23 @@ class AnalysisPage(ScrollPage):
         self.force_count = Pill("0 台", "info", dot=False)
         force_head.addWidget(self.force_count)
         strategy_layout.addLayout(force_head)
-        self.force_text = label("该火点暂无已分配装备", "caption", color=theme.MUTED)
+        self.force_text = label("当前火点暂无已投入装备", "caption", color=theme.MUTED)
         self.force_text.setWordWrap(True)
         strategy_layout.addWidget(self.force_text)
-        self.force_strip = QScrollArea()
+        self.force_total = label("全场 0 台", "caption", color=theme.MUTED)
+        strategy_layout.addWidget(self.force_total)
+        self.force_strip = QWidget()
         self.force_strip.setObjectName("forceStrip")
-        self.force_strip.setFrameShape(QFrame.Shape.NoFrame)
-        self.force_strip.setWidgetResizable(True)
-        self.force_strip.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.force_strip.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.force_strip.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self.force_strip.setFixedHeight(104)
-        self.force_strip.setStyleSheet("#forceStrip { background: transparent; border: none; }")
-        force_content = QWidget()
-        self.force_rows = QHBoxLayout(force_content)
+        self.force_strip.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.force_rows = QGridLayout(self.force_strip)
         self.force_rows.setContentsMargins(0, 0, 0, 0)
-        self.force_rows.setSpacing(6)
-        self.force_rows.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self.force_strip.setWidget(force_content)
+        self.force_rows.setHorizontalSpacing(6)
+        self.force_rows.setVerticalSpacing(6)
+        self.force_rows.setColumnStretch(0, 1)
+        self.force_rows.setColumnStretch(1, 1)
         strategy_layout.addWidget(self.force_strip)
         self._force_signature = None
+        self._force_widgets = {}
         strategy_layout.addStretch(1)
         self.decision_panel = decision
         body.addWidget(decision, 27)
@@ -219,58 +216,67 @@ class AnalysisPage(ScrollPage):
         self._on_time(self.slider.value())
 
     def _refresh_forces(self, fire_id: str | None):
-        assigned = [r for r in self.engine.robots if fire_id and r.assigned_fire_id == fire_id
-                    and r.status == "on_mission" and r.mission in ("recon", "en_route", "spraying")]
-        entries = [(r, r.task) for r in assigned]
-        signature = (fire_id, tuple((r.id, r.kind, task, r.status, round(r.battery))
-                                    for r, task in entries))
-        if signature == self._force_signature:
-            return
-        while self.force_rows.count():
-            item = self.force_rows.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.hide()
-                widget.setParent(None)
-                widget.deleteLater()
+        # 当前火点和全场数量均由同一实时状态计算，避免与列表不一致。
+        entries = self.engine.active_fire_robots(fire_id) if fire_id else []
+        all_units = self.engine.active_fire_robots()
+        on_scene = sum(r.mission == "spraying" for r in entries)
+        en_route = sum(r.mission in ("en_route", "recon") for r in entries)
         self.force_count.set_text(f"{len(entries)} 台")
         self.force_count.set_kind("success" if entries else "info")
+        self.force_total.setText(f"全场投入 {len(all_units)} 台 · 当前火点 {fire_id or '—'}")
+        self.force_text.setText(f"赶赴 / 侦察 {en_route} 台 · 现场作业 {on_scene} 台" if entries else
+                                ("当前火点暂无执行装备，系统将自动重试调度" if fire_id else "当前无活跃火点"))
+        signature = (fire_id, tuple((r.id, r.kind) for r in entries))
+        if signature != self._force_signature:
+            while self.force_rows.count():
+                item = self.force_rows.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.hide()
+                    widget.setParent(None)
+                    widget.deleteLater()
+            self._force_widgets.clear()
+            for index, r in enumerate(entries):
+                is_uav = r.kind == "UAV"
+                card = QWidget()
+                card.setObjectName("force_" + r.id)
+                card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+                color = theme.BLUE if is_uav else theme.ACCENT_DARK
+                bg = theme.BLUE_SOFT if is_uav else theme.ACCENT_SOFT
+                card.setStyleSheet(f"#{card.objectName()} {{ background:{bg}; border-radius:10px; }}")
+                layout = QVBoxLayout(card)
+                layout.setContentsMargins(8, 7, 8, 7)
+                layout.setSpacing(4)
+                head = QHBoxLayout()
+                head.setSpacing(5)
+                icon = IconTile("drone" if is_uav else "robot", color, theme.SURFACE, 26, 14, 8)
+                icon.setObjectName("drone_icon" if is_uav else "robot_icon")
+                head.addWidget(icon)
+                identity = label(r.id, None, color=color, size=11, weight=700)
+                identity.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+                identity.setToolTip(r.id)
+                head.addWidget(identity, 1)
+                layout.addLayout(head)
+                task = label("", "caption", color=theme.TEXT_SOFT)
+                task.setObjectName("force_task")
+                task.setWordWrap(True)
+                layout.addWidget(task)
+                detail = label("", "caption", color=theme.MUTED)
+                detail.setObjectName("force_battery")
+                detail.setWordWrap(True)
+                layout.addWidget(detail)
+                self.force_rows.addWidget(card, index // 2, index % 2)
+                card.show()
+                self._force_widgets[r.id] = (card, task, detail)
+            self._force_signature = signature
         self.force_strip.setVisible(bool(entries))
-        self.force_text.setText("当前火点已投入装备" if entries else
-                                ("暂无可用装备，系统将自动重试调度" if fire_id else "暂无已分配装备"))
-        for r, task_name in entries:
-            is_uav = r.kind == "UAV"
-            row = QWidget()
-            row.setObjectName("force_" + r.id)
-            row.setFixedSize(150, 76)
-            color = theme.BLUE if is_uav else theme.ACCENT_DARK
-            bg = theme.BLUE_SOFT if is_uav else theme.ACCENT_SOFT
-            row.setStyleSheet(f"#{row.objectName()} {{ background:{bg}; border-radius:10px; }}")
-            lay = QVBoxLayout(row)
-            lay.setContentsMargins(8, 7, 8, 6)
-            lay.setSpacing(4)
-            head = QHBoxLayout()
-            head.setSpacing(6)
-            icon = IconTile("drone" if is_uav else "robot", color, theme.SURFACE, 26, 14, 8)
-            icon.setObjectName("drone_icon" if is_uav else "robot_icon")
-            head.addWidget(icon)
-            identity = QVBoxLayout()
-            identity.setSpacing(0)
-            identity.addWidget(label(r.id, None, color=color, size=11, weight=700))
-            battery = label(f"电量 {r.battery:.0f}%", "caption", color=theme.MUTED)
-            battery.setObjectName("force_battery")
-            identity.addWidget(battery)
-            head.addLayout(identity, 1)
-            lay.addLayout(head)
-            task = label(task_name, "caption", color=theme.TEXT_SOFT)
-            task.setObjectName("force_task")
-            task.setToolTip(task_name)
-            task.setWordWrap(True)
-            lay.addWidget(task)
-            row.setToolTip(f"{r.id} · {'无人机' if is_uav else '地面机器人'}\n{task_name}\n电量 {r.battery:.0f}%")
-            self.force_rows.addWidget(row)
-            row.show()
-        self._force_signature = signature
+        for r in entries:
+            card, task, detail = self._force_widgets[r.id]
+            stage = {"recon": "侦察中", "en_route": "赶赴中", "spraying": "现场作业"}.get(r.mission, r.status_text)
+            task.setText(r.task)
+            task.setToolTip(r.task)
+            detail.setText(f"{stage} · 电量 {r.battery:.0f}%")
+            card.setToolTip(f"{r.id} · {'无人机' if r.kind == 'UAV' else '地面机器人'}\n{r.task}\n{stage} · 电量 {r.battery:.0f}%")
 
     def _select_fire(self, fire_id: str):
         if any(f.id == fire_id and f.state != "extinguished" for f in self.engine.fires):

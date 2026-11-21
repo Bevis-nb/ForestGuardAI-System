@@ -55,6 +55,24 @@ class DispatchAssignmentTests(unittest.TestCase):
         self.assertEqual(fire.state, 'extinguished')
         self.assertGreater(fire.water_used_l, 0)
 
+    def test_live_active_force_count_across_fires_and_states(self):
+        e = self.engine
+        first = e.ignite_random_fire((.3, .3))
+        second = e.ignite_random_fire((.7, .7))
+        self.assertEqual(len(e.active_fire_robots()), 10)
+        self.assertEqual(len(e.active_fire_robots(first.id)), 5)
+        self.assertEqual(len(e.active_fire_robots(second.id)), 5)
+        unit = e.active_fire_robots(first.id)[0]
+        unit.status = 'offline'
+        self.assertEqual(len(e.active_fire_robots(first.id)), 4)
+        self.assertEqual(len(e.active_fire_robots()), 9)
+        unit.status = 'on_mission'
+        unit.mission = 'returning'
+        self.assertEqual(len(e.active_fire_robots(first.id)), 4)
+        first.state = 'extinguished'
+        self.assertEqual(len(e.active_fire_robots(first.id)), 0)
+        self.assertEqual(len(e.active_fire_robots()), 5)
+
     def test_empty_tank_does_not_suppress_and_triggers_refill(self):
         e = self.engine
         fire = e.ignite_random_fire((0.5, 0.5))

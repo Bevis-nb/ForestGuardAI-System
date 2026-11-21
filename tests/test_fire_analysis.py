@@ -88,6 +88,7 @@ class FireAnalysisTests(unittest.TestCase):
         self.page.map.grab()
         self.assertEqual(set(self.page.map._prediction["fires"]), {a.id, b.id})
         self.assertEqual(self.page.force_count.text(), "5 台")
+        self.assertIn("全场投入 10 台", self.page.force_total.text())
         drone_row = self.page.findChild(QWidget, "force_" + drone.id)
         robot_row = self.page.findChild(QWidget, "force_" + robot.id)
         self.assertIsNotNone(drone_row.findChild(QWidget, "drone_icon"))
@@ -105,7 +106,7 @@ class FireAnalysisTests(unittest.TestCase):
         self.app.processEvents()
         assigned = [r for r in self.engine.robots if r.assigned_fire_id == fire.id]
         self.assertEqual(self.page.force_count.text(), f"{len(assigned)} 台")
-        self.assertEqual(self.page.force_text.text(), "当前火点已投入装备")
+        self.assertIn("赶赴 / 侦察", self.page.force_text.text())
         for robot in assigned:
             row = self.page.findChild(QWidget, "force_" + robot.id)
             self.assertIsNotNone(row)
@@ -119,6 +120,11 @@ class FireAnalysisTests(unittest.TestCase):
         self.assertEqual(self.page.force_count.text(), f"{len(assigned)} 台")
         self.assertEqual(self.page.force_rows.count(), len(assigned))
         self.assertTrue(self.page.force_strip.isVisible())
+        self.assertEqual(self.page.force_rows.columnCount(), 2)
+        for index in range(len(assigned)):
+            row, col, rowspan, colspan = self.page.force_rows.getItemPosition(index)
+            self.assertEqual((row, col, rowspan, colspan), (index // 2, index % 2, 1, 1))
+        self.assertIn(f"全场投入 {len(assigned)} 台", self.page.force_total.text())
         robot = assigned[0]
         for battery in (70, 55, 30):
             robot.battery = battery
@@ -128,10 +134,14 @@ class FireAnalysisTests(unittest.TestCase):
             self.assertIsNotNone(row)
             self.assertIn(str(battery), row.findChild(QLabel, "force_battery").text())
             self.assertEqual(self.page.force_count.text(), f"{len(assigned)} 台")
+        robot.mission = "spraying"
+        self.engine.tick.emit()
+        self.assertIn("现场作业 1 台", self.page.force_text.text())
         robot.status = "offline"
         self.engine.tick.emit()
         self.app.processEvents()
         self.assertEqual(self.page.force_count.text(), f"{len(assigned) - 1} 台")
+        self.assertIn(f"全场投入 {len(assigned) - 1} 台", self.page.force_total.text())
         self.assertIsNone(self.page.findChild(QWidget, "force_" + robot.id))
         for r in assigned:
             r.assigned_fire_id = ""

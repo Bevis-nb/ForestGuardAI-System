@@ -1010,6 +1010,14 @@ class SimEngine(QObject):
             self.fire_appeared.emit(new_fire)
         return new_fire
 
+    def active_fire_robots(self, fire_id: str | None = None) -> list[Robot]:
+        """返回正在执行活跃火点任务的装备，可按火点筛选。"""
+        active_ids = {f.id for f in self.fires if f.state != "extinguished"}
+        return [r for r in self.robots
+                if r.assigned_fire_id in active_ids
+                and (fire_id is None or r.assigned_fire_id == fire_id)
+                and r.status == "on_mission" and r.mission in ("recon", "en_route", "spraying")]
+
     def _ensure_dispatch(self, fire_id: str) -> list[dict]:
         """为火点补足空地编队；无可用装备时后续仿真步自动重试。"""
         assigned = [r for r in self.robots if r.assigned_fire_id == fire_id
