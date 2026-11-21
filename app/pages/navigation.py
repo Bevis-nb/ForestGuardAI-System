@@ -38,8 +38,7 @@ class NavPage(ScrollPage):
         self.slam_pill = self.add_action(Pill("SLAM 建图中 87%", "success"))
         self.add_action(button("重新建图", "soft", "refresh", height=34,
                                on_click=self._restart_slam))
-        self.add_action(button("生成最优路径", "primary", "route", height=34,
-                               on_click=self._replan))
+        # 路径随选中装备与参数实时规划
 
         body = QHBoxLayout()
         body.setSpacing(14)
@@ -191,7 +190,7 @@ class NavPage(ScrollPage):
         self._update_slider_labels()
         if hasattr(self, "gain_pill"):
             self.gain_pill.set_kind("info")
-            self.gain_pill.set_text("参数已修改，点击「生成最优路径」")
+            self.gain_pill.set_text("参数已实时更新")
 
     def _update_slider_labels(self):
         if not hasattr(self, "slider_风向"):
