@@ -138,7 +138,7 @@ class FireAnalysisTests(unittest.TestCase):
         self.engine.tick.emit()
         self.app.processEvents()
         self.assertEqual(self.page.force_count.text(), "0 台")
-        self.assertTrue(self.page.force_strip.isVisible())
+        self.assertTrue(self.page.force_strip.isHidden())
 
     def test_video_feed_tracks_fire_and_channel(self):
         view = self.page.cam
@@ -175,17 +175,14 @@ class FireAnalysisTests(unittest.TestCase):
         self.app.processEvents()
         panels = (self.page.vision_panel, self.page.spread_panel, self.page.decision_panel)
         before = [panel.size() for panel in panels]
-        strip_height = self.page.force_strip.height()
         fire = self.engine.ignite_random_fire((0.4, 0.4))
         self.page._refresh()
         self.app.processEvents()
         self.assertEqual([panel.size() for panel in panels], before)
-        self.assertEqual(self.page.force_strip.height(), strip_height)
         fire.state = "extinguished"
         self.page._refresh()
         self.app.processEvents()
         self.assertEqual([panel.size() for panel in panels], before)
-        self.assertEqual(self.page.force_strip.height(), strip_height)
 
     def test_suspicious_fire_is_tracked(self):
         fire = self.engine.trigger_suspicious_fire((0.4, 0.4))

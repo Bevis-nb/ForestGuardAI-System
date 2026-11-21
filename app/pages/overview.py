@@ -72,7 +72,7 @@ class OverviewPage(ScrollPage):
 
         # 地图
         map_panel = Panel("林区实时态势", "多源融合 · 热成像火点已标定", "map")
-        map_panel.setFixedHeight(480)
+        map_panel.setFixedHeight(420)
         map_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         map_panel.add_action(kv_chip("wind", self.engine.wind_label(), theme.BLUE, theme.BLUE_SOFT))
         map_panel.add_action(kv_chip("thermo", f"{self.engine.temperature:.1f}℃", theme.AMBER, theme.AMBER_SOFT))
@@ -96,7 +96,7 @@ class OverviewPage(ScrollPage):
         right.setSpacing(14)
 
         risk_panel = Panel("火险综合研判", "多因子加权 · 每 60 秒刷新", "shield")
-        risk_panel.setFixedHeight(260)
+        risk_panel.setFixedHeight(234)
         risk_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         risk_panel.add_action(Pill("极高风险", "critical"))
         self.contain_pill = Pill("控制率 18.4%", "success")
@@ -119,7 +119,7 @@ class OverviewPage(ScrollPage):
         right.addWidget(risk_panel)
 
         events_panel = Panel("协同事件流", "分布式协商 · 实时", "activity")
-        events_panel.setFixedHeight(206)
+        events_panel.setFixedHeight(172)
         events_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         events_panel.add_action(Pill("9 台在线", "success"))
         self.events = EventList(self.engine.events, limit=3, show_time=True)
@@ -134,7 +134,7 @@ class OverviewPage(ScrollPage):
         row.setSpacing(14)
 
         detect = Panel("AI 火情识别", "可见光识别 · 仿真画面", "camera")
-        detect.setFixedHeight(300)
+        detect.setFixedHeight(260)
         detect.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.vision_pill = Pill("无火情", "success")
         detect.add_action(self.vision_pill)
@@ -159,7 +159,7 @@ class OverviewPage(ScrollPage):
         row.addWidget(detect, 3)
 
         fleet = Panel("装备状态", "空地协同编队 · 8 台", "robot")
-        fleet.setFixedHeight(300)
+        fleet.setFixedHeight(260)
         fleet.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         fleet.add_action(button("装备管理", "ghost", height=26, size=11,
                                 on_click=self._go_fleet))
@@ -170,7 +170,7 @@ class OverviewPage(ScrollPage):
         self._refresh_robot_rows()
 
         self.alerts_panel = Panel("实时告警", "自动推送 · 按等级排序", "bell")
-        self.alerts_panel.setFixedHeight(300)
+        self.alerts_panel.setFixedHeight(260)
         self.alerts_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.alerts_panel.add_action(button("全部", "ghost", height=26, size=11,
                                             on_click=self._go_alerts))

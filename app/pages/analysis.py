@@ -22,7 +22,7 @@ class AnalysisPage(ScrollPage):
 
         def stable_panel(panel):
             # 高度由页面滚动承载，宽度按列比例分配，不受实时文字长度影响。
-            panel.setFixedHeight(820)
+            panel.setFixedHeight(700)
             panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             return panel
 
@@ -31,7 +31,7 @@ class AnalysisPage(ScrollPage):
         vision.add_action(self.vision_pill)
         self.cam = VideoFeed(engine)
         self.cam.setMinimumWidth(0)
-        self.cam.setFixedHeight(300)
+        self.cam.setFixedHeight(238)
         vision.add(self.cam, 1)
         mode = QHBoxLayout()
         mode.addWidget(label("热成像", "caption"))
@@ -46,8 +46,9 @@ class AnalysisPage(ScrollPage):
         for bar in (self.fire_bar, self.smoke_bar, self.normal_bar):
             vision.add(bar)
         vision.addWidget(label("识别分数与视频均为演示数据", "caption"))
+        vision.addStretch(1)
         self.vision_panel = vision
-        body.addWidget(vision, 2)
+        body.addWidget(vision, 22)
 
         spread = stable_panel(Panel("火势蔓延预测", "与林区实时态势使用同一底图 · 点击火点切换", "flame"))
         self.selection_pill = Pill("无活跃火点", "info")
@@ -56,7 +57,7 @@ class AnalysisPage(ScrollPage):
         self.map.set_robots_visible(False)
         self.map.select_fires = True
         self.map.fire_selected.connect(self._select_fire)
-        self.map.setFixedHeight(430)
+        self.map.setFixedHeight(380)
         spread.add(self.map, 1)
         time_row = QHBoxLayout()
         time_row.addWidget(label("推演时刻", "caption"))
@@ -78,17 +79,33 @@ class AnalysisPage(ScrollPage):
         spread.addLayout(metrics)
         self.total_area = label("全部火点潜在燃烧区：—", "caption", color=theme.TEXT_SOFT)
         spread.addWidget(self.total_area)
-        spread.addWidget(label("色块合并全部火点；弧形色带为建议隔离带，红色需人工复核。仅供仿真演示。", "caption"))
+        map_note = label("色块合并全部火点；弧形色带为建议隔离带，红色需人工复核。仅供仿真演示。", "caption")
+        map_note.setWordWrap(True)
+        spread.addWidget(map_note)
+        spread.addStretch(1)
         self.spread_panel = spread
-        body.addWidget(spread, 3)
+        body.addWidget(spread, 31)
 
         decision = stable_panel(Panel("灭火策略", "针对选中火点动态生成 · 仅供演示", "shield"))
         self.strategy_pill = Pill("无火情", "info")
         decision.add_action(self.strategy_pill)
+        strategy_scroll = QScrollArea()
+        strategy_scroll.setObjectName("strategyScroll")
+        strategy_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        strategy_scroll.setWidgetResizable(True)
+        strategy_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        strategy_scroll.setStyleSheet("#strategyScroll { background: transparent; border: none; }")
+        strategy_content = QWidget()
+        strategy_content.setObjectName("strategyContent")
+        strategy_content.setStyleSheet("#strategyContent { background: transparent; }")
+        strategy_layout = QVBoxLayout(strategy_content)
+        strategy_layout.setContentsMargins(0, 0, 3, 0)
+        strategy_layout.setSpacing(10)
+        strategy_scroll.setWidget(strategy_content)
+        decision.addWidget(strategy_scroll, 1)
 
         # 以不同层级的卡片区分火情摘要、隔离带和行动建议。
         summary = QWidget()
-        summary.setFixedHeight(75)
         soft_bg(summary, theme.ACCENT_SOFT, 12)
         summary_lay = QHBoxLayout(summary)
         summary_lay.setContentsMargins(12, 12, 12, 12)
@@ -102,7 +119,7 @@ class AnalysisPage(ScrollPage):
         self.fire_info.setWordWrap(True)
         summary_col.addWidget(self.fire_info)
         summary_lay.addLayout(summary_col, 1)
-        decision.addWidget(summary)
+        strategy_layout.addWidget(summary)
 
         # 关键数值以独立小卡展示，避免在长段文字中寻找信息。
         metrics_row = QHBoxLayout()
@@ -121,10 +138,9 @@ class AnalysisPage(ScrollPage):
             tile_lay.addWidget(label(title, "caption"))
             tile_lay.addWidget(value)
             metrics_row.addWidget(tile, 1)
-        decision.addLayout(metrics_row)
+        strategy_layout.addLayout(metrics_row)
 
         isolation = QWidget()
-        isolation.setFixedHeight(108)
         soft_bg(isolation, theme.SURFACE_ALT, 12)
         iso_lay = QVBoxLayout(isolation)
         iso_lay.setContentsMargins(12, 11, 12, 12)
@@ -139,10 +155,9 @@ class AnalysisPage(ScrollPage):
         self.iso_text = label("暂无建议", None, color=theme.TEXT_SOFT, size=11.5)
         self.iso_text.setWordWrap(True)
         iso_lay.addWidget(self.iso_text)
-        decision.addWidget(isolation)
+        strategy_layout.addWidget(isolation)
 
         action = QWidget()
-        action.setFixedHeight(128)
         soft_bg(action, theme.SURFACE_ALT, 12)
         action_lay = QVBoxLayout(action)
         action_lay.setContentsMargins(12, 11, 12, 12)
@@ -164,20 +179,18 @@ class AnalysisPage(ScrollPage):
         self.action_followup = label("", "caption", color=theme.MUTED)
         self.action_followup.setWordWrap(True)
         action_lay.addWidget(self.action_followup)
-        decision.addWidget(action)
+        strategy_layout.addWidget(action)
 
         force_head = QHBoxLayout()
         force_head.setSpacing(7)
         force_head.addWidget(IconTile("users", theme.ACCENT, theme.ACCENT_SOFT, 30, 15, 9))
         force_head.addWidget(label("投入力量", None, size=12, weight=700), 1)
         self.force_count = Pill("0 台", "info", dot=False)
-        self.force_count.setFixedWidth(58)
         force_head.addWidget(self.force_count)
-        decision.addLayout(force_head)
+        strategy_layout.addLayout(force_head)
         self.force_text = label("该火点暂无已分配装备", "caption", color=theme.MUTED)
         self.force_text.setWordWrap(True)
-        self.force_text.setFixedHeight(30)
-        decision.addWidget(self.force_text)
+        strategy_layout.addWidget(self.force_text)
         self.force_strip = QScrollArea()
         self.force_strip.setObjectName("forceStrip")
         self.force_strip.setFrameShape(QFrame.Shape.NoFrame)
@@ -193,11 +206,11 @@ class AnalysisPage(ScrollPage):
         self.force_rows.setSpacing(6)
         self.force_rows.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.force_strip.setWidget(force_content)
-        decision.addWidget(self.force_strip)
+        strategy_layout.addWidget(self.force_strip)
         self._force_signature = None
-        decision.addStretch(1)
+        strategy_layout.addStretch(1)
         self.decision_panel = decision
-        body.addWidget(decision, 2)
+        body.addWidget(decision, 27)
         self.root.addLayout(body, 1)
 
         engine.tick.connect(self._refresh)
@@ -222,6 +235,7 @@ class AnalysisPage(ScrollPage):
                 widget.deleteLater()
         self.force_count.set_text(f"{len(entries)} 台")
         self.force_count.set_kind("success" if entries else "info")
+        self.force_strip.setVisible(bool(entries))
         self.force_text.setText("当前火点已投入装备" if entries else
                                 ("暂无可用装备，系统将自动重试调度" if fire_id else "暂无已分配装备"))
         for r, task_name in entries:
