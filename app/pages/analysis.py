@@ -158,9 +158,7 @@ class AnalysisPage(ScrollPage):
         self.steps = QVBoxLayout()
         self.steps.setSpacing(5)
         decision.addLayout(self.steps)
-        self.apply_btn = button("确认并下发处置方案", "primary", "send", height=40,
-                                on_click=self._confirm)
-        decision.addWidget(self.apply_btn)
+        decision.addWidget(pill("方案已随火情自动生成并生效", "success"))
         body.addWidget(decision, 2)
 
         self.root.addLayout(body, 1)
