@@ -516,7 +516,8 @@ class SimEngine(QObject):
             self._advance_robot(r)
             if r.spraying:
                 f_obj = next((f for f in self.fires if f.id == (r.assigned_fire_id or self.fire.id)), self.fire)
-                if math.hypot(r.x - f_obj.x, r.y - f_obj.y) > 0.10:
+                fx, fy = f_obj.origin
+                if math.hypot(r.x - fx, r.y - fy) > 0.10:
                     r.spraying = False
                     r.mission = "en_route"
             if r.spraying and not self.estop:
@@ -768,7 +769,9 @@ class SimEngine(QObject):
         if len(uavs) >= 2:
             selected.append((uavs[1], "recon", "空中洒水 · 压制火头", (fx + 0.05, fy - 0.05)))
         offsets = [(-0.06, 0.04), (0.06, 0.04), (0.0, 0.07)]
-        ugv_tasks = ["火线正面强攻", "东侧隔离带阻断", "南线洒水降温"]
+        h_dir = "东侧" if fx < 0.5 else "西侧"
+        v_dir = "南线" if fy < 0.5 else "北线"
+        ugv_tasks = ["火线正面强攻", f"{h_dir}隔离带阻断", f"{v_dir}洒水降温"]
         for idx, r in enumerate(ugvs[:3]):
             ox, oy = offsets[idx]
             selected.append((r, "suppress", ugv_tasks[idx], (fx + ox, fy + oy)))
@@ -883,7 +886,9 @@ class SimEngine(QObject):
         if len(uavs) >= 2:
             selected.append((uavs[1], "recon", "空中洒水 · 压制火头", (fx + 0.05, fy - 0.05)))
         offsets = [(-0.06, 0.04), (0.06, 0.04), (0.0, 0.07)]
-        ugv_tasks = ["火线正面强攻", "东侧隔离带阻断", "南线洒水降温"]
+        h_dir = "东侧" if fx < 0.5 else "西侧"
+        v_dir = "南线" if fy < 0.5 else "北线"
+        ugv_tasks = ["火线正面强攻", f"{h_dir}隔离带阻断", f"{v_dir}洒水降温"]
         for idx, r in enumerate(ugvs[:3]):
             ox, oy = offsets[idx]
             selected.append((r, "suppress", ugv_tasks[idx], (fx + ox, fy + oy)))
