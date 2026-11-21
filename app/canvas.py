@@ -552,13 +552,25 @@ class TerrainMap(QWidget):
                     p.setBrush(QColor(56, 189, 248, int(220 * (1 - t * 0.5))))
                     p.drawEllipse(QPointF(sx, sy), 3.2, 3.2)
 
+            is_docked = robot.mission == "idle" and robot.status in ("standby", "charging")
+            if is_docked:
+                # 在基地内以较小圆点环绕排列，避免重叠
+                docked_list = [
+                    rb.id for rb in self.engine.robots
+                    if rb.mission == "idle" and rb.status in ("standby", "charging")
+                    and abs(rb.x - robot.x) < 0.08 and abs(rb.y - robot.y) < 0.08
+                ]
+                idx = docked_list.index(robot.id) if robot.id in docked_list else 0
+                ang = (idx / max(1, len(docked_list))) * 2 * math.pi
+                pos = QPointF(pos.x() + math.cos(ang) * 16, pos.y() + math.sin(ang) * 16)
             self._draw_badge(p, pos, "drone" if robot.kind == "UAV" else "robot",
                              color, "",
-                             highlight=robot.id == self.selected_robot)
+                             highlight=robot.id == self.selected_robot,
+                             small=is_docked)
 
     def _draw_badge(self, p: QPainter, pos: QPointF, icon_name: str, color: str,
-                    text: str, highlight: bool = False, small: bool = False):
-        radius = (7 if small else 13) if not highlight else (9 if small else 15)
+                    text: str, highlight: bool = False):
+        radius = 13 if not highlight else 15
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 235))
         p.drawEllipse(pos, radius, radius)
