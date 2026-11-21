@@ -16,6 +16,15 @@ from datetime import datetime, timedelta
 from PySide6.QtCore import QObject, QTimer, Signal
 
 GRID_W, GRID_H = 64, 40
+# 演示用装备过温与恢复阈值（并非真实设备安全参数）。
+ROBOT_OVERHEAT_TEMP = 60.0
+ROBOT_LOW_BATTERY = 30.0
+ROBOT_RECOVERY_TEMP = 35.0
+SPRAY_RANGE = 0.06  # 地图归一化距离，仅供仿真
+PATROL_SENSOR_RADIUS = 0.11  # 演示用归一化视幅，不代表实际相机性能
+# 十条往返扫描航带；每条宽度按演示相机视幅计算，并非真实传感器覆盖。
+PATROL_WAYPOINTS = tuple((x, y) for i, y in enumerate((.08, .18, .28, .38, .48, .58, .68, .78, .88, .92))
+                         for x in ((.08, .92) if i % 2 == 0 else (.92, .08)))
 
 
 # ---------------------------------------------------------------------------
@@ -64,13 +73,15 @@ class GridPlanner:
         wrad = math.radians(wind_deg)
         wind_vec = (math.cos(wrad), math.sin(wrad))
         # 强化学习策略学习到的代价权重（更重视风场与热源规避）
+        if algo not in ("RL-A*", "A*", "Dijkstra"):
+            raise ValueError(f"不支持的路径算法: {algo}")
         rl = algo == "RL-A*"
         w_wind = 0.40 if rl else 0.0
         w_slope = 0.26 if rl else 0.0
-        w_fire = 0.60 if rl else 0.18
+        w_fire = 0.60 if rl else 0.0
 
         def heuristic(ax, ay):
-            return math.hypot(ax - gx, ay - gy)
+            return 0.0 if algo == "Dijkstra" else math.hypot(ax - gx, ay - gy) * (0.25 if rl else 1.0)
 
         def cost(x, y, nx, ny):
             base = 1.0
@@ -101,6 +112,9 @@ class GridPlanner:
                     base += 0.85
             return max(0.25, base)
 
+        if (not (0 <= sx < GRID_W and 0 <= sy < GRID_H and 0 <= gx < GRID_W and 0 <= gy < GRID_H)
+                or (sx, sy) in self.blocked or (gx, gy) in self.blocked):
+            return PathPlan([], 0, 0, 0, 0, algo)
         open_heap = [(heuristic(sx, sy), 0.0, (sx, sy))]
         came: dict[tuple[int, int], tuple[int, int]] = {}
         gscore = {(sx, sy): 0.0}
@@ -119,6 +133,8 @@ class GridPlanner:
                 nx, ny = x + dx, y + dy
                 if not (0 <= nx < GRID_W and 0 <= ny < GRID_H):
                     continue
+                if dx and dy and ((x + dx, y) in self.blocked or (x, y + dy) in self.blocked):
+                    continue
                 c = cost(x, y, nx, ny)
                 if c is None:
                     continue
@@ -129,32 +145,17 @@ class GridPlanner:
                     heapq.heappush(open_heap, (ng + heuristic(nx, ny), ng, (nx, ny)))
 
         if not found:
-            pts = [(start[0], start[1]), (goal[0], goal[1])]
-            return PathPlan(pts, 820, 96, 0.42, 18, algo)
+            return PathPlan([], 0, 0, 0, 0, algo)
 
         cells = [(gx, gy)]
         while cells[-1] != (sx, sy):
             cells.append(came[cells[-1]])
         cells.reverse()
-        path = [(x / GRID_W, y / GRID_H) for x, y in cells]
+        path = ([(start[0], start[1]), (goal[0], goal[1])] if len(cells) == 1 else
+                [(start[0], start[1])] + [((x + 0.5) / GRID_W, (y + 0.5) / GRID_H) for x, y in cells] + [(goal[0], goal[1])])
 
-        # 折线简化
-        simplified = [path[0]]
-        for i in range(1, len(path) - 1):
-            p0, p1, p2 = simplified[-1], path[i], path[i + 1]
-            a1 = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
-            a2 = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-            if abs(a1 - a2) > 0.18:
-                simplified.append(p1)
-        simplified.append(path[-1])
-        # 平滑插值，便于绘制曲线
-        smooth: list[tuple[float, float]] = []
-        for i in range(len(simplified) - 1):
-            a, b = simplified[i], simplified[i + 1]
-            for t in range(6):
-                k = t / 6
-                smooth.append((a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k))
-        smooth.append(simplified[-1])
+        # 保留每个栅格中心，移动和绘制严格使用同一折线。
+        smooth = path
 
         length = sum(
             math.hypot((smooth[i + 1][0] - smooth[i][0]) * 1200,
@@ -227,6 +228,81 @@ class FireSpreadModel:
         return out
 
 
+    def assess(self, fire, minutes: int, wind_deg: float, wind_speed: float,
+               humidity: float) -> dict:
+        """演示性概率场和下风向隔离带；不是经验证的火场预测。"""
+        grid = self.grid(minutes, wind_deg, wind_speed, humidity, fire.origin)
+        # 隔离带放在中等概率区的下风缘，垂直于蔓延方向。
+        angle = math.radians(wind_deg)
+        dx, dy = math.cos(angle), math.sin(angle)
+        w, h = len(grid[0]), len(grid)
+        distances = [((x / w - fire.origin[0]) * dx + (y / h - fire.origin[1]) * dy)
+                     for y, row in enumerate(grid) for x, value in enumerate(row)
+                     if value >= 0.4]
+        distance = max(0.04, max(distances, default=0.04))
+        cx, cy = fire.origin[0] + dx * distance, fire.origin[1] + dy * distance
+        half = min(0.18, 0.06 + distance * 0.45)
+        def clamp(value):
+            return max(0.0, min(1.0, value))
+        # 带状隔离线以弧形包围下风向火头；采样点也用于全火点避让检测。
+        bend = min(0.07, 0.02 + distance * 0.2)
+        line = tuple((clamp(cx + dy * half * u + dx * bend * (1 - u * u)),
+                      clamp(cy - dx * half * u + dy * bend * (1 - u * u)))
+                     for u in (i / 6 for i in range(-6, 7)))
+        # 地图尺度 1200m × 800m，像元统计面积仅为演示估计。
+        area = sum(v >= 0.4 for row in grid for v in row) * (1200 * 800 / (w * h)) / 10000
+        return {"grid": grid, "line": line, "area": area,
+                "width_m": 12 if fire.intensity >= 70 else (8 if fire.intensity >= 35 else 6)}
+
+
+    def assess_all(self, fires, minutes: int, wind_deg: float, wind_speed: float,
+                   humidity: float) -> dict:
+        """合并活跃火点概率场，并避开其他预测燃烧区调整建议隔离线。
+
+        概率采用逐像元最大值（不作独立性假设）；隔离带为简化示意，
+        找不到不穿越燃烧区的线时保留原线并标记需人工复核。
+        """
+        active = [f for f in fires if f.state != "extinguished"]
+        assessments = {f.id: self.assess(f, minutes, wind_deg, wind_speed, humidity)
+                       for f in active}
+        if not assessments:
+            return {"grid": [], "fires": {}, "area": 0.0}
+        grids = [item["grid"] for item in assessments.values()]
+        h, w = len(grids[0]), len(grids[0][0])
+        combined = [[max(grid[y][x] for grid in grids) for x in range(w)]
+                    for y in range(h)]
+        dx, dy = math.cos(math.radians(wind_deg)), math.sin(math.radians(wind_deg))
+        for fire in active:
+            item = assessments[fire.id]
+            base_line = item["line"]
+            # 弧线外移时逐段采样全部火点的中高概率区，防止穿越相邻火场。
+            found = None
+            for step in range(31):
+                offset = step * 0.015
+                line = tuple((point[0] + dx * offset, point[1] + dy * offset)
+                             for point in base_line)
+                if any(not (0 <= x <= 1 and 0 <= y <= 1) for x, y in line):
+                    break
+                safe = True
+                for start, end in zip(line, line[1:]):
+                    for i in range(5):
+                        t = i / 4
+                        x = start[0] * (1 - t) + end[0] * t
+                        y = start[1] * (1 - t) + end[1] * t
+                        if combined[min(h - 1, int(y * h))][min(w - 1, int(x * w))] >= 0.4:
+                            safe = False
+                            break
+                    if not safe:
+                        break
+                if safe:
+                    found = line
+                    break
+            item["line_conflict"] = found is None
+            item["line"] = found if found is not None else base_line
+        area = sum(v >= 0.4 for row in combined for v in row) * (1200 * 800 / (w * h)) / 10000
+        return {"grid": combined, "fires": assessments, "area": area}
+
+
 # ---------------------------------------------------------------------------
 # 运行状态
 # ---------------------------------------------------------------------------
@@ -290,9 +366,28 @@ class Robot:
     eta_seconds: float = 0.0
     eta_status: str = "准时"     # 早到 / 准时 / 晚到
     assigned_fire_id: str = ""
+    needs_refill: bool = False
+    thermal_rest: bool = False
+    route_algo: str = "RL-A*"
+    route_wind: float = 228.0
+    route_wind_speed: float = 4.6
+    route_slope: float = 0.34
+    route: list[tuple[float, float]] = field(default_factory=list)
+    route_index: int = 0
+    route_goal: tuple[float, float] | None = None
+    route_plan: PathPlan | None = None
+    route_failed: bool = False
+    patrol_index: int = 0
+    patrol_incomplete: bool = False
+    patrol_seen: set[tuple[int, int]] = field(default_factory=set)
+    patrol_gap: tuple[float, float] | None = None
 
     @property
     def status_text(self) -> str:
+        if self.thermal_rest and self.status == "returning":
+            return "过温返航"
+        if self.thermal_rest and self.status == "charging":
+            return "冷却休整"
         return {
             "on_mission": "执行任务",
             "standby": "待命",
@@ -312,6 +407,14 @@ class Robot:
         }.get(self.status, "info")
 
 
+def robot_health_risk(robot: Robot) -> float:
+    """显示排序：电量低于40%或温度高于45℃预警；20%及以下或超过60℃严重。"""
+    temp_risk = (robot.temp - 45.0) / (ROBOT_OVERHEAT_TEMP - 45.0)
+    if robot.temp <= ROBOT_OVERHEAT_TEMP:
+        temp_risk = min(temp_risk, 0.999)
+    return max(0.0, (40.0 - robot.battery) / 20.0, temp_risk)
+
+
 class SimEngine(QObject):
     tick = Signal()
     alert_added = Signal(dict)
@@ -323,6 +426,9 @@ class SimEngine(QObject):
         super().__init__()
         self.rng = random.Random(seed)
         self.planner = GridPlanner()
+        # 演示无人机飞越地面障碍；空域禁飞区未建模。
+        self.air_planner = GridPlanner()
+        self.air_planner.blocked = set()
         self.spread_model = FireSpreadModel()
         self.started_at = datetime.now()
         self.paused = False
@@ -339,13 +445,14 @@ class SimEngine(QObject):
         self._th_state: dict[str, bool] = {}
         self.slope = 0.34
         self.risk = 82.0
-        self.fire_area = 12.8
-        self.containment = 18.0
+        self.fire_area = 0.0
+        self.containment = 100.0
         self.fire_confidence = 96.0
         self.fire_origin = (0.655, 0.545)
         # --- 灭火演示：火情状态机 / 调度 / 速度 ---
         self.fires: list[FireIncident] = []
-        self._next_fire_in = 6
+        self._next_fire_in = 1
+        self.auto_ignite_enabled = False  # 登录后由主窗口延迟开启
         self.fire = FireIncident(id="A-00", intensity=0.0, area=0.0, containment=100.0, state="extinguished")
         self.fire_history: list[FireIncident] = []
         self.fire_counter = 0
@@ -353,6 +460,7 @@ class SimEngine(QObject):
         self.sim_speed = 1           # 1 / 2 / 4 倍速
         self.auto_dispatch = True
         self.dispatch_plan: list[dict] = []
+        self._pending_handoffs: list[dict] = []
         self.last_report: dict | None = None
         self._milestones: set[int] = set()
         self._dispatch_timer = 0.0
@@ -365,17 +473,52 @@ class SimEngine(QObject):
         self.baseline = self.planner.plan((0.16, 0.78), (0.52, 0.62), self.wind_deg,
                                           self.wind_speed, self.slope, self.fire_origin, algo="A*")
         self.robots = self._make_robots()
-        self.alerts = self._make_alerts()
-        self.events = self._make_events()
+        self.patrol_round = 0
+        self.patrol_members = {r.id for r in self.robots if r.mission == "patrol"}
+        self.patrol_completed: set[str] = set()
+        self.alerts: list[dict] = []
+        self.events: list[dict] = []
+        self.collaboration_events: list[dict] = []
+        self._collaboration_shortages: dict[str, tuple[int, int]] = {}
         self.tasks = self._make_tasks()
         self.temp_history = [26.1, 26.6, 27.2, 27.0, 27.8, 28.1, 28.4]
         self.risk_history = [54, 58, 63, 68, 72, 78, 82]
         self.containment_history = [4, 6, 8, 11, 14, 16, 18]
-        self.evaluate_and_dispatch()
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self._on_tick)
         self.timer.start()
+
+    def reset_session(self) -> None:
+        """开始新的演练：就地重置装备，保留 UI 持有的 Robot 对象引用。"""
+        for robot, initial in zip(self.robots, self._make_robots()):
+            robot.__dict__.update(initial.__dict__)
+        self.patrol_round = 0
+        self.patrol_members = {r.id for r in self.robots if r.mission == "patrol"}
+        self.patrol_completed.clear()
+        self.fires.clear()
+        self.fire_history.clear()
+        self.fire_counter = 0
+        self.fire = FireIncident(id="A-00", intensity=0.0, area=0.0,
+                                 containment=100.0, state="extinguished")
+        self.fire_area = 0.0
+        self.containment = 100.0
+        self.fire_origin = (0.655, 0.545)
+        self.sim_time = 0.0
+        self.dispatch_plan = []
+        self._pending_handoffs.clear()
+        self.last_report = None
+        self._milestones.clear()
+        self._th_state.clear()
+        self.alerts.clear()
+        self.events.clear()
+        self.collaboration_events.clear()
+        self._collaboration_shortages.clear()
+        self.paused = False
+        self.estop = False
+        self.auto_ignite_enabled = False
+        self._next_fire_in = 1
+        self.tick.emit()
 
     # ---------------- 初始化数据 ----------------
     def _make_robots(self) -> list[Robot]:
@@ -407,6 +550,7 @@ class SimEngine(QObject):
                 r.temp = 25.0
                 r.status = "on_mission" if (b_idx in (0, 2) and i == 0) else "standby"
                 r.mission = "patrol" if (b_idx in (0, 2) and i == 0) else "idle"
+                r.patrol_incomplete = r.mission == "patrol"
                 r.task = "全林区覆盖巡逻" if r.mission == "patrol" else f"{bname}待命"
                 r.altitude = 80 + i * 6 if kind == "UAV" else 0
                 r.speed = 4.2 if kind == "UAV" else 1.1
@@ -472,25 +616,13 @@ class SimEngine(QObject):
         self.wind_deg = (self.wind_deg + self.rng.uniform(-1.6, 1.6)) % 360
 
         # 自动随机时间生成火点（支持多火点）
-        self._next_fire_in -= 1
-        if self._next_fire_in <= 0 and len([x for x in self.fires if x.state != "extinguished"]) < 3:
-            self._next_fire_in = self.rng.randint(18, 32)
-            self.ignite_random_fire(auto_notify=True)
+        if self.auto_ignite_enabled:
+            self._next_fire_in -= 1
+            if self._next_fire_in <= 0 and len([x for x in self.fires if x.state != "extinguished"]) < 3:
+                self._next_fire_in = self.rng.randint(18, 32)
+                self.ignite_random_fire(auto_notify=True)
 
-        # 保持固定 2 架健康无人机执行全林区覆盖巡逻（100s 全覆盖）
-        for r in self.robots:
-            if r.kind == "UAV" and r.mission == "patrol" and (r.temp > 45.0 or r.battery < 25.0):
-                self._assign_nearest_base(r)
-        patrol_uavs = [r for r in self.robots if r.kind == "UAV" and r.mission == "patrol"]
-        if len(patrol_uavs) < 2:
-            for r in self.robots:
-                if r.kind == "UAV" and r.mission == "idle" and r.status != "offline" and r.battery >= 25.0 and r.temp <= 45.0:
-                    r.mission = "patrol"
-                    r.status = "on_mission"
-                    r.task = "全林区覆盖巡逻"
-                    patrol_uavs.append(r)
-                    if len(patrol_uavs) >= 2:
-                        break
+        self._manage_patrol_rotation()
 
         # 推进机器人移动与灭火作业
         suppression_by_fire: dict[str, float] = {}
@@ -498,6 +630,8 @@ class SimEngine(QObject):
         for r in self.robots:
             if r.status == "offline":
                 continue
+            if r.status in ("on_mission", "standby") and (r.temp > ROBOT_OVERHEAT_TEMP or r.battery < ROBOT_LOW_BATTERY):
+                self._return_for_recovery(r)
             near_fire = any(math.hypot(r.x - f.origin[0], r.y - f.origin[1]) < 0.14 for f in active_fires_now)
             if near_fire and r.status == "on_mission":
                 r.temp = min(68.0, r.temp + self.rng.uniform(1.5, 2.8))
@@ -506,29 +640,49 @@ class SimEngine(QObject):
             else:
                 r.temp = max(25.0, r.temp - 1.2)
 
+            if r.status in ("on_mission", "standby") and (r.temp > ROBOT_OVERHEAT_TEMP or r.battery < ROBOT_LOW_BATTERY):
+                self._return_for_recovery(r)
+            r.history = (r.history + [r.temp])[-14:]
             if r.status == "on_mission":
                 r.battery = max(6.0, r.battery - self.rng.uniform(0.04, 0.12))
+                if r.battery < ROBOT_LOW_BATTERY:
+                    self._return_for_recovery(r)
                 r.speed = max(0.2, min(6.0, r.speed + self.rng.uniform(-0.15, 0.15)))
-                r.history = (r.history + [r.temp])[-14:]
             elif r.status == "charging":
                 r.battery = min(100.0, r.battery + 0.45)
                 r.water_l = min(r.water_cap, r.water_l + 6.0)
-            self._advance_robot(r)
-            if r.spraying:
-                f_obj = next((f for f in self.fires if f.id == (r.assigned_fire_id or self.fire.id)), self.fire)
-                fx, fy = f_obj.origin
-                if r.mission != "spraying" or math.hypot(r.x - fx, r.y - fy) > 0.06:
-                    r.spraying = False
-                    r.mission = "en_route"
-            if r.spraying and not self.estop:
-                fid = r.assigned_fire_id or self.fire.id
-                suppression_by_fire[fid] = suppression_by_fire.get(fid, 0.0) + r.suppression_power
-                used = min(r.water_l, 1.8 if r.kind == "UGV" else 0.6)
-                r.water_l = max(0.0, r.water_l - used)
                 r.payload = round(100.0 * r.water_l / max(1.0, r.water_cap), 1)
-                for f_item in self.fires:
-                    if f_item.id == fid:
-                        f_item.water_used_l += used
+                if ((r.needs_refill or r.thermal_rest) and r.water_l >= r.water_cap
+                        and r.battery >= 40 and r.temp <= ROBOT_RECOVERY_TEMP):
+                    r.needs_refill = False
+                    r.thermal_rest = False
+                    r.status = "standby"
+                    r.mission = "idle"
+                    r.task = "休整补给完成 · 待命"
+                    self.push_event(f"{r.id} 冷却与补给完成，可重新执行任务", "success")
+            self._advance_robot(r)
+            if r.spraying and not self.estop:
+                f_obj = self.spray_target(r)
+                if f_obj is not None:
+                    demand = 1.8 if r.kind == "UGV" else 0.6
+                    used = min(r.water_l, demand)
+                    suppression_by_fire[f_obj.id] = suppression_by_fire.get(f_obj.id, 0.0) + r.suppression_power * (used / demand)
+                    r.water_l = max(0.0, r.water_l - used)
+                    r.payload = round(100.0 * r.water_l / max(1.0, r.water_cap), 1)
+                    f_obj.water_used_l += used
+                if r.water_l <= 1e-6 and r.status == "on_mission":
+                    fire_id = r.assigned_fire_id
+                    if fire_id:
+                        self._pending_handoffs.append({"fire_id": fire_id, "kind": r.kind, "task": r.task,
+                                                       "tx": r.target_x, "ty": r.target_y, "from_id": r.id})
+                    self.log_collaboration("退出", "水量耗尽，返回基地补给；系统自动补派", fire_id, (r.id,), "warning")
+                    r.spraying = False
+                    r.assigned_fire_id = ""
+                    r.needs_refill = True
+                    self._assign_nearest_base(r)
+                    self.push_event(f"{r.id} 水量耗尽，返回所属基地补给", "warning")
+                elif f_obj is None:
+                    r.spraying = False
 
         # 多火点蔓延与扑救对抗算法
         active_fires = [f for f in self.fires if f.state != "extinguished"]
@@ -569,7 +723,10 @@ class SimEngine(QObject):
                     f"耗时 {duration}s · 峰值过火 {f.peak_area:.1f} ha · 耗水 {f.water_used_l:.0f} L",
                     "success", "灭火捷报",
                 )
-                self.push_event(f"火点 {f.id} 明火已扑灭，相关装备自动返回就近空闲基地", "success")
+                units = tuple(r.id for r in self.robots if r.assigned_fire_id == f.id)
+                self.log_collaboration("扑灭", "火点扑灭，参与装备返回所属基地", f.id, units, "success")
+                self._collaboration_shortages.pop(f.id, None)
+                self.push_event(f"火点 {f.id} 明火已扑灭，相关装备自动返回所属基地", "success")
                 for r in self.robots:
                     if r.assigned_fire_id == f.id:
                         r.spraying = False
@@ -583,6 +740,14 @@ class SimEngine(QObject):
         ]
 
         still_active = [f for f in self.fires if f.state != "extinguished"]
+        active_ids = {f.id for f in still_active}
+        self._pending_handoffs = [item for item in self._pending_handoffs if item["fire_id"] in active_ids]
+        if self.auto_dispatch and not self.estop:
+            for fire in still_active:
+                if fire.state == "suspicious":
+                    self._dispatch_scout(fire)
+                else:
+                    self._ensure_dispatch(fire.id)
         if still_active:
             self.fire = still_active[0]
             self.fire_origin = self.fire.origin
@@ -627,92 +792,300 @@ class SimEngine(QObject):
         r.mission = "returning"
         r.status = "returning"
         r.task = f"返回{bname}"
+        r.spraying = False
+        self._ensure_robot_route(r)
+
+    def return_robot(self, r: Robot, refill: bool = False) -> None:
+        """返航指令也释放原任务，交由同一设备路线规划执行。"""
+        if r.assigned_fire_id and r.mission in ("en_route", "spraying"):
+            self._pending_handoffs.append({"fire_id": r.assigned_fire_id, "kind": r.kind,
+                "task": r.task, "tx": r.target_x, "ty": r.target_y, "from_id": r.id})
+        r.assigned_fire_id = ""
+        r.spraying = False
+        r.needs_refill = r.needs_refill or refill
+        self._assign_nearest_base(r)
+
+    def _return_for_recovery(self, r: Robot) -> None:
+        """过温或低电量立即释放任务，返基地休整并补派。"""
+        fire_id = r.assigned_fire_id
+        if fire_id and r.mission in ("en_route", "spraying"):
+            self._pending_handoffs.append({"fire_id": fire_id, "kind": r.kind, "task": r.task,
+                                           "tx": r.target_x, "ty": r.target_y, "from_id": r.id})
+        r.assigned_fire_id = ""
+        r.spraying = False
+        r.arrived = False
+        hot = r.temp > ROBOT_OVERHEAT_TEMP
+        low_battery = r.battery < ROBOT_LOW_BATTERY
+        r.thermal_rest = hot
+        r.needs_refill = r.needs_refill or low_battery
+        self._assign_nearest_base(r)
+        reason = "机身过温 / 电量过低" if hot and low_battery else ("机身过温" if hot else "电量过低")
+        r.task = f"{reason} · 返回基地休整"
+        self.log_collaboration("退出", f"{reason}，停止任务并返回基地" + ("；系统自动补派" if fire_id else ""), fire_id, (r.id,), "warning")
+        self.push_event(f"{r.id} {reason}（{r.temp:.1f}℃ / {r.battery:.1f}%），返基地休整"
+                        + (f"，系统将为火点 {fire_id} 补派装备" if fire_id else ""), "warning")
+
+    def spray_target(self, r: Robot) -> FireIncident | None:
+        """唯一的有效喷水判定；显示和压制都使用装备所属的活跃火点。"""
+        if (self.estop or r.status != "on_mission" or r.mission != "spraying"
+                or not r.spraying or r.water_l <= 1e-6):
+            return None
+        fire = next((f for f in self.fires if f.id == r.assigned_fire_id
+                        and f.state not in ("extinguished", "suspicious")), None)
+        if fire is None or math.hypot(r.x - fire.origin[0], r.y - fire.origin[1]) > SPRAY_RANGE:
+            return None
+        return fire
+
+    def _patrol_base_candidate(self, base_index: int) -> Robot | None:
+        _, _, bx, by = BASES[base_index]
+        candidates = [r for r in self.robots if r.kind == "UAV" and r.status == "standby"
+                      and r.mission == "idle" and not r.assigned_fire_id and not r.patrol_incomplete
+                      and not r.thermal_rest and not r.needs_refill and r.battery >= ROBOT_LOW_BATTERY
+                      and r.temp <= 45 and math.hypot(r.x - bx, r.y - by) < 1e-6
+                      and (r.home_x, r.home_y) == (bx, by)]
+        return max(candidates, key=lambda r: (r.battery, r.id), default=None)
+
+    def _start_patrol(self, r: Robot) -> None:
+        r.patrol_incomplete = True
+        r.mission, r.status = "patrol", "on_mission"
+        r.task = (f"林区巡逻 · 航带 {r.patrol_index // 2 + 1}/{len(PATROL_WAYPOINTS) // 2}"
+                  if r.patrol_index < len(PATROL_WAYPOINTS) else "林区巡逻 · 补扫")
+        self._ensure_robot_route(r)
+
+    def _manage_patrol_rotation(self) -> None:
+        """一轮两架；整轮完成后按北山/东坡、西林/南谷交替。"""
+        if self.patrol_members and self.patrol_completed == self.patrol_members:
+            self.patrol_round += 1
+            self.patrol_members.clear()
+            self.patrol_completed.clear()
+        if not self.patrol_members:
+            indexes = (0, 2) if self.patrol_round % 2 == 0 else (1, 3)
+            pair = [self._patrol_base_candidate(i) for i in indexes]
+            if any(r is None for r in pair):
+                return  # 目标基地无人可用时等待，不跨基地冒充轮岗
+            self.patrol_members = {r.id for r in pair}
+            for r in pair:
+                self._start_patrol(r)
+            names = "、".join(BASES[i][1] for i in indexes)
+            self.log_collaboration("巡逻轮岗", f"{names} 各派一架无人机开始新一轮", "", tuple(r.id for r in pair))
+            self.push_event(f"巡逻轮岗：{names} 各派一架无人机开始新一轮", "info")
+            return
+        # 未完成的成员休整后续巡；离线时由同基地设备接替已覆盖进度。
+        for robot_id in tuple(self.patrol_members - self.patrol_completed):
+            r = next(r for r in self.robots if r.id == robot_id)
+            if r.status == "offline":
+                base_index = next(i for i, base in enumerate(BASES)
+                                  if (r.home_x, r.home_y) == (base[2], base[3]))
+                replacement = self._patrol_base_candidate(base_index)
+                if replacement is None:
+                    continue
+                replacement.patrol_index = r.patrol_index
+                replacement.patrol_gap = r.patrol_gap
+                replacement.patrol_seen = set(r.patrol_seen)
+                r.patrol_incomplete = False
+                r.patrol_index, r.patrol_gap = 0, None
+                r.patrol_seen.clear()
+                self.patrol_members.remove(r.id)
+                self.patrol_members.add(replacement.id)
+                self._start_patrol(replacement)
+                self.log_collaboration("巡逻接替", "同基地设备接替离线巡逻机并继承进度", "", (r.id, replacement.id), "warning")
+                self.push_event(f"{replacement.id} 接替离线的 {r.id} 继续本轮巡逻", "warning")
+            elif (r.status == "standby" and r.mission == "idle" and not r.thermal_rest
+                  and not r.needs_refill and r.battery >= ROBOT_LOW_BATTERY and r.temp <= 45):
+                self._start_patrol(r)
+
+    def configure_robot_route(self, robot_id: str, algo: str, wind: float,
+                              wind_speed: float, slope: float) -> None:
+        """导航页设置单个设备；自动任务只能使用该设备保存的设置。"""
+        if algo not in ("RL-A*", "A*", "Dijkstra"):
+            raise ValueError(f"不支持的路径算法: {algo}")
+        r = next(r for r in self.robots if r.id == robot_id)
+        r.route_algo, r.route_wind, r.route_wind_speed, r.route_slope = algo, wind, wind_speed, slope
+        r.route_goal = None
+        self._ensure_robot_route(r)
+        self.tick.emit()
+
+    def _robot_goal(self, r: Robot) -> tuple[float, float] | None:
+        if r.status == "returning" and r.mission == "returning":
+            return (r.home_x, r.home_y)
+        if r.status != "on_mission":
+            return None
+        if r.mission == "patrol":
+            if r.patrol_index >= len(PATROL_WAYPOINTS):
+                return r.patrol_gap
+            waypoints = PATROL_WAYPOINTS if r.home_x < 0.5 else tuple(reversed(PATROL_WAYPOINTS))
+            return waypoints[r.patrol_index]
+        if r.mission in ("recon", "en_route"):
+            return (r.target_x, r.target_y)
+        return None
+
+    def _ensure_robot_route(self, r: Robot) -> None:
+        goal = self._robot_goal(r)
+        if goal is None:
+            r.route, r.route_goal, r.route_index, r.route_plan, r.route_failed = [], None, 0, None, False
+            return
+        if r.route_goal == goal:
+            return
+        fire = next((f for f in self.fires if f.id == r.assigned_fire_id and f.state != "extinguished"), None)
+        # 没有活跃火点时不应依据历史火点位置绕行。
+        if fire is None:
+            active = [f for f in self.fires if f.state != "extinguished"]
+            fire = min(active, key=lambda f: math.hypot(f.origin[0] - r.x, f.origin[1] - r.y), default=None)
+        planner = self.air_planner if r.kind == "UAV" else self.planner
+        plan = planner.plan((r.x, r.y), goal, r.route_wind, r.route_wind_speed,
+                            r.route_slope, fire.origin if fire else (-10.0, -10.0), r.route_algo)
+        r.route_plan, r.route = plan, list(plan.path)
+        r.route_index, r.route_goal = 1, goal
+        r.route_failed = not bool(plan.path)
+        if r.route_failed:
+            self.push_event(f"{r.id} 路径不可达，已停止并等待重新规划", "warning")
+
+    def remaining_route(self, r: Robot) -> list[tuple[float, float]]:
+        if not r.route or r.route_failed or self._robot_goal(r) != r.route_goal:
+            return []
+        return [(r.x, r.y)] + r.route[r.route_index:]
+
+    def _record_patrol_coverage(self, r: Robot, start, end) -> None:
+        """用仿真传感器视幅记录沿实际移动轨迹覆盖的栅格。"""
+        distance = math.dist(start, end)
+        samples = max(1, math.ceil(distance / .025))
+        for i in range(samples + 1):
+            t = i / samples
+            px = start[0] + (end[0] - start[0]) * t
+            py = start[1] + (end[1] - start[1]) * t
+            xmin = max(0, int((px - PATROL_SENSOR_RADIUS) * GRID_W))
+            xmax = min(GRID_W - 1, int((px + PATROL_SENSOR_RADIUS) * GRID_W))
+            ymin = max(0, int((py - PATROL_SENSOR_RADIUS) * GRID_H))
+            ymax = min(GRID_H - 1, int((py + PATROL_SENSOR_RADIUS) * GRID_H))
+            for y in range(ymin, ymax + 1):
+                for x in range(xmin, xmax + 1):
+                    if math.hypot((x + .5) / GRID_W - px, (y + .5) / GRID_H - py) <= PATROL_SENSOR_RADIUS:
+                        r.patrol_seen.add((x, y))
+
+    def _follow_robot_route(self, r: Robot, step: float) -> bool:
+        self._ensure_robot_route(r)
+        if r.route_failed or not r.route:
+            r.eta_status = "路径不可达"
+            r.eta_seconds = 0
+            return False
+        remaining = step
+        while remaining > 1e-9 and r.route_index < len(r.route):
+            x, y = r.route[r.route_index]
+            dx, dy = x - r.x, y - r.y
+            dist = math.hypot(dx, dy)
+            if dist > 1e-9:
+                r.heading = math.atan2(dy, dx)
+            travel = min(dist, remaining)
+            if dist > 1e-9:
+                start = (r.x, r.y)
+                r.x += dx / dist * travel
+                r.y += dy / dist * travel
+                if r.mission == "patrol":
+                    self._record_patrol_coverage(r, start, (r.x, r.y))
+            remaining -= travel
+            if dist <= travel + 1e-9:
+                r.x, r.y = x, y
+                r.route_index += 1
+            else:
+                break
+        points = self.remaining_route(r)
+        distance = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:]))
+        r.eta_seconds = round(distance / step, 1)
+        r.eta_status = "已到达" if r.route_index >= len(r.route) else "赶赴中"
+        return r.route_index >= len(r.route)
 
     def _advance_robot(self, r: Robot):
         if self.estop or r.status not in ("on_mission", "returning"):
             return
         if r.mission == "patrol":
-            # 100 秒全林区覆盖巡逻航线（往复扫描）
-            t = ((self.sim_time + (0 if r.id.endswith("1") else 50)) % 100) / 100.0
-            cx = 0.10 + 0.80 * abs(2 * ((t * 5) % 1.0) - 1.0)
-            cy = 0.14 + 0.72 * t
-            dx, dy = cx - r.x, cy - r.y
-            dist = max(0.001, math.hypot(dx, dy))
-            step = 0.014 if r.kind == "UAV" else 0.008
-            r.heading = math.atan2(dy, dx)
-            r.x = min(0.92, max(0.06, r.x + (dx / dist) * min(step, dist)))
-            r.y = min(0.92, max(0.06, r.y + (dy / dist) * min(step, dist)))
+            if self._follow_robot_route(r, 0.06):
+                r.patrol_index += 1
+                r.route_goal = None
+                if r.patrol_index >= len(PATROL_WAYPOINTS):
+                    uncovered = [(x, y) for y in range(GRID_H) for x in range(GRID_W)
+                                 if (x, y) not in r.patrol_seen]
+                    if uncovered:
+                        x, y = min(uncovered, key=lambda cell: math.hypot(
+                            (cell[0] + .5) / GRID_W - r.x, (cell[1] + .5) / GRID_H - r.y))
+                        r.patrol_gap = ((x + .5) / GRID_W, (y + .5) / GRID_H)
+                        r.task = f"林区巡逻 · 补扫 {len(uncovered)} 个栅格"
+                        self._ensure_robot_route(r)
+                    else:
+                        r.patrol_index = 0
+                        r.patrol_incomplete = False
+                        r.patrol_gap = None
+                        r.patrol_seen.clear()
+                        self.patrol_completed.add(r.id)
+                        self._assign_nearest_base(r)
+                        r.task = "巡逻一轮完成 · 返回基地"
+                        self.push_event(f"{r.id} 完成一轮扫描航带，返回基地休整", "success")
+                else:
+                    r.task = f"林区巡逻 · 航带 {r.patrol_index // 2 + 1}/{len(PATROL_WAYPOINTS) // 2}"
+                    self._ensure_robot_route(r)
             return
         if r.mission == "recon":
-            tx, ty = r.target_x, r.target_y
-            dx, dy = tx - r.x, ty - r.y
-            dist = math.hypot(dx, dy)
-            if dist > 0.03:
-                r.heading = math.atan2(dy, dx)
-                r.x = min(0.94, max(0.04, r.x + (dx / dist) * 0.026))
-                r.y = min(0.94, max(0.04, r.y + (dy / dist) * 0.026))
-            else:
+            if self._follow_robot_route(r, 0.026):
                 r.mission = "idle"
                 r.arrived = True
-                if self.fire.state == "suspicious":
-                    self.fire.state = "spreading"
-                    self.push_alert(
-                        f"无人机 {r.id} 现场勘察确认：火点 {self.fire.id} 属实！",
-                        f"热成像温度 418℃，建议立即调度灭火编队前往扑救",
-                        "critical", f"{r.id} 空中侦察",
-                    )
-                    self.push_event(f"{r.id} 抵近勘察确认火点 {self.fire.id} 属实，等待指挥员确认调度方案", "warning")
-                    self.recon_confirmed.emit(self.fire)
+                recon_fire = next((f for f in self.fires if f.id == r.assigned_fire_id), None)
+                if recon_fire and recon_fire.state == "suspicious":
+                    recon_fire.state = "spreading"
+                    self.push_alert(f"无人机 {r.id} 现场勘察确认：火点 {recon_fire.id} 属实！",
+                                    "热成像发现异常热源，启动自动调度", "critical", f"{r.id} 空中侦察")
+                    self.log_collaboration("确认", "侦察确认火点，启动空地自动调度", recon_fire.id, (r.id,), "warning")
+                    self.push_event(f"{r.id} 抵近勘察确认火点 {recon_fire.id} 属实，启动自动调度", "warning")
+                    r.assigned_fire_id = ""
+                    r.status = "standby"
+                    self._ensure_dispatch(recon_fire.id)
+                    self.recon_confirmed.emit(recon_fire)
+                self._ensure_robot_route(r)
             return
-
         if r.mission in ("en_route", "spraying"):
-            tx, ty = r.target_x, r.target_y
-            dx, dy = tx - r.x, ty - r.y
-            dist = math.hypot(dx, dy)
-            step = 0.022 if r.kind == "UAV" else 0.013
-            if dist > 0.025:
-                r.heading = math.atan2(dy, dx)
-                r.x = min(0.94, max(0.04, r.x + (dx / dist) * step))
-                r.y = min(0.94, max(0.04, r.y + (dy / dist) * step))
-                r.arrived = False
+            fire = next((f for f in self.fires if f.id == r.assigned_fire_id
+                         and f.state not in ("extinguished", "suspicious")), None)
+            if fire is None:
                 r.spraying = False
-                r.eta_seconds = round(dist / max(0.005, step), 1)
-                r.eta_status = "早到" if r.eta_seconds < 8 else ("准时" if r.eta_seconds < 18 else "晚到")
-            else:
+                self._ensure_robot_route(r)
+                return
+            if r.mission == "spraying":
+                if math.hypot(r.x - fire.origin[0], r.y - fire.origin[1]) <= SPRAY_RANGE:
+                    r.spraying = True
+                    return
+                r.mission, r.spraying = "en_route", False
+                r.target_x, r.target_y = fire.origin
+            if math.hypot(r.target_x - fire.origin[0], r.target_y - fire.origin[1]) > SPRAY_RANGE:
+                r.target_x, r.target_y = fire.origin
+            r.spraying = False
+            if self._follow_robot_route(r, 0.022 if r.kind == "UAV" else 0.013):
                 r.arrived = True
                 r.mission = "spraying"
-                r.eta_seconds = 0.0
-                r.eta_status = "已到达"
                 r.spraying = True
-                # 到达火线后小幅环绕/微调位置
-                r.heading = math.atan2(self.fire_origin[1] - r.y, self.fire_origin[0] - r.x)
-        elif r.mission == "returning":
-            dx, dy = r.home_x - r.x, r.home_y - r.y
-            dist = math.hypot(dx, dy)
-            step = 0.020 if r.kind == "UAV" else 0.012
-            if dist > 0.02:
-                r.heading = math.atan2(dy, dx)
-                r.x += (dx / dist) * step
-                r.y += (dy / dist) * step
-            else:
+                self.log_collaboration("到场", f"抵达作业点，执行{r.task}", fire.id, (r.id,), "success")
+                self._ensure_robot_route(r)
+                r.heading = math.atan2(fire.origin[1] - r.y, fire.origin[0] - r.x)
+            return
+        if r.mission == "returning":
+            if self._follow_robot_route(r, 0.020 if r.kind == "UAV" else 0.012):
                 r.mission = "idle"
-                r.status = "standby"
-                r.task = "待命"
+                r.status = "charging" if r.needs_refill or r.thermal_rest else "standby"
+                r.task = "基地冷却休整中" if r.thermal_rest else ("基地补给中" if r.needs_refill else "待命")
                 r.spraying = False
-        else:
-            if r.kind == "UAV":
-                r.x = min(0.92, max(0.05, r.x + self.rng.uniform(-0.004, 0.004)))
-                r.y = min(0.92, max(0.05, r.y + self.rng.uniform(-0.004, 0.004)))
-            else:
-                r.x = min(0.9, max(0.08, r.x + self.rng.uniform(-0.002, 0.002)))
-                r.y = min(0.9, max(0.08, r.y + self.rng.uniform(-0.002, 0.002)))
+                self._ensure_robot_route(r)
+
+    def _random_reachable_fire_origin(self) -> tuple[float, float]:
+        # 随机演练火点及编队的预设作业点需位于可通行栅格。
+        offsets = ((0, 0), (-.015, -.015), (.015, -.015), (-.02, .01), (.02, .01), (0, .02))
+        for _ in range(200):
+            x, y = round(self.rng.uniform(.24, .80), 3), round(self.rng.uniform(.24, .76), 3)
+            if all((int((x + dx) * GRID_W), int((y + dy) * GRID_H)) not in self.planner.blocked
+                   for dx, dy in offsets):
+                return x, y
+        return (.5, .5)
 
     def trigger_suspicious_fire(self, origin: tuple[float, float] | None = None) -> FireIncident:
         """流程二：发现可疑火点 → 预警通知 → 派无人机前往勘察。"""
         if origin is None:
-            ox = round(self.rng.uniform(0.28, 0.80), 3)
-            oy = round(self.rng.uniform(0.26, 0.76), 3)
-            origin = (ox, oy)
+            origin = self._random_reachable_fire_origin()
         self.fire_counter += 1
         fid = f"A-{self.fire_counter:02d}"
         intensity = round(self.rng.uniform(48.0, 68.0), 1)
@@ -724,33 +1097,62 @@ class SimEngine(QObject):
             peak_intensity=intensity, peak_area=area,
             history=[intensity], area_history=[area],
         )
+        self.fires.append(self.fire)
         self.fire_area = area
         self.containment = 15.0
         self._milestones.clear()
         self.last_report = None
         self.replan()
 
-        # 选最近可用无人机前去勘察
-        uavs = [r for r in self.robots if r.kind == "UAV" and r.status != "offline"]
-        scout = min(uavs, key=lambda r: math.hypot(r.x - origin[0], r.y - origin[1])) if uavs else self.robots[0]
-        scout.status = "on_mission"
-        scout.mission = "recon"
-        scout.task = f"勘察可疑火点 {fid}"
-        scout.target_x, scout.target_y = origin
-        scout.spraying = False
-
+        self.log_collaboration("发现", "发现可疑火点，等待无人机核查", fid, (), "warning")
+        scout = self._dispatch_scout(self.fire)
+        detail = (f"已指派 {scout.id} 前往勘察" if scout else "暂无可用无人机，系统将自动重试")
         self.push_alert(
             f"火灾预警：发现可疑火点 {fid}",
-            f"卫星/传感器发现异常热斑 ({origin[0]:.2f}, {origin[1]:.2f})，已指派 {scout.id} 前往勘察",
+            f"卫星/传感器发现异常热斑 ({origin[0]:.2f}, {origin[1]:.2f})，{detail}",
             "warning", "火灾预警系统",
         )
-        self.push_event(f"预警：{scout.id} 正在飞往可疑火点 {fid} 进行现场核查…", "info")
         return self.fire
 
-    def recommend_dispatch(self) -> list[dict]:
-        """仅生成推荐调度方案与评分（不立即派单），供人工确认或自动执行。"""
-        fx, fy = self.fire_origin
-        candidates = [r for r in self.robots if r.status != "offline" and r.battery >= 18.0]
+    def _dispatch_scout(self, fire: FireIncident) -> Robot | None:
+        if any(r.assigned_fire_id == fire.id and r.mission == "recon" and r.status != "offline"
+               for r in self.robots):
+            return None
+        uavs = [r for r in self.robots if r.kind == "UAV" and r.status in ("standby", "on_mission")
+                and r.mission == "idle" and not r.patrol_incomplete and not r.assigned_fire_id and r.battery >= ROBOT_LOW_BATTERY
+                and r.temp <= ROBOT_OVERHEAT_TEMP and not r.thermal_rest and not r.needs_refill]
+        if not uavs:
+            missing = (1, 0)
+            if self._collaboration_shortages.get(fire.id) != missing:
+                self.log_collaboration("等待侦察", "暂无可用无人机，系统持续重试", fire.id, (), "warning")
+                self._collaboration_shortages[fire.id] = missing
+            return None
+        self._collaboration_shortages.pop(fire.id, None)
+        scout = min(uavs, key=lambda r: math.hypot(r.x - fire.origin[0], r.y - fire.origin[1]))
+        scout.status = "on_mission"
+        scout.mission = "recon"
+        scout.task = f"勘察可疑火点 {fire.id}"
+        scout.target_x, scout.target_y = fire.origin
+        scout.assigned_fire_id = fire.id
+        scout.spraying = False
+        self._ensure_robot_route(scout)
+        self.log_collaboration("侦察", "无人机前往可疑火点核查", fire.id, (scout.id,))
+        self.push_event(f"预警：{scout.id} 正在飞往可疑火点 {fire.id} 进行现场核查…", "info")
+        return scout
+
+    def recommend_dispatch(self, fire_id: str | None = None, *, store: bool = True) -> list[dict]:
+        """生成指定活跃火点的推荐方案；store=False 用于只读预览。"""
+        target_id = fire_id or self.fire.id
+        fire = next((f for f in self.fires if f.id == target_id and f.state != "extinguished"), None)
+        if fire is None:
+            if store:
+                self.dispatch_plan = []
+            return []
+        fx, fy = fire.origin
+        candidates = [r for r in self.robots if r.status in ("standby", "on_mission")
+                      and r.mission == "idle" and not r.patrol_incomplete and not r.assigned_fire_id
+                      and r.battery >= ROBOT_LOW_BATTERY and r.water_l > 1.8
+                      and r.temp <= ROBOT_OVERHEAT_TEMP and not r.thermal_rest and not r.needs_refill]
         plan: list[dict] = []
 
         def score_robot(r: Robot, role: str) -> tuple[float, dict]:
@@ -765,10 +1167,10 @@ class SimEngine(QObject):
 
         selected: list[tuple[Robot, str, str, tuple[float, float]]] = []
         if len(uavs) >= 1:
-            selected.append((uavs[0], "recon", "空中侦察 · 热源锁定", (fx - 0.04, fy - 0.06)))
+            selected.append((uavs[0], "recon", "空中侦察 · 热源锁定", (fx - 0.015, fy - 0.015)))
         if len(uavs) >= 2:
-            selected.append((uavs[1], "recon", "空中洒水 · 压制火头", (fx + 0.05, fy - 0.05)))
-        offsets = [(-0.06, 0.04), (0.06, 0.04), (0.0, 0.07)]
+            selected.append((uavs[1], "recon", "空中洒水 · 压制火头", (fx + 0.015, fy - 0.015)))
+        offsets = [(-0.02, 0.01), (0.02, 0.01), (0.0, 0.02)]
         h_dir = "东侧" if fx < 0.5 else "西侧"
         v_dir = "南线" if fy < 0.5 else "北线"
         ugv_tasks = ["火线正面强攻", f"{h_dir}隔离带阻断", f"{v_dir}洒水降温"]
@@ -779,41 +1181,60 @@ class SimEngine(QObject):
         for r, role, task_name, (tx, ty) in selected:
             sc, bd = score_robot(r, role)
             plan.append({
-                "robot_id": r.id, "name": r.name, "kind": r.kind,
+                "robot_id": r.id, "name": r.name, "kind": r.kind, "fire_id": fire.id,
                 "task": task_name, "score": sc,
                 "tx": min(0.92, max(0.06, tx)), "ty": min(0.92, max(0.06, ty)),
                 "reason": f"综合 {sc} 分（能力 {bd['cap']:.0f} · 距火点 {bd['dist']:.2f} · 电量 {bd['bat']:.0f}% · 载荷 {bd['pay']:.0f}%）",
             })
-        self.dispatch_plan = plan
+        if store:
+            self.dispatch_plan = plan
         return plan
 
-    def confirm_dispatch(self, selected_ids: list[str] | None = None) -> list[dict]:
-        """按人工确认/勾选的装备列表正式下发扑救任务。"""
-        if not self.dispatch_plan:
-            self.recommend_dispatch()
-        chosen = [p for p in self.dispatch_plan if selected_ids is None or p["robot_id"] in selected_ids]
+    def confirm_dispatch(self, selected_ids: list[str] | None = None, *,
+                         fire_id: str | None = None, plan: list[dict] | None = None) -> list[dict]:
+        """下发已确认方案，始终绑定方案所属火点，不覆盖其他火点的装备。"""
+        target_id = fire_id or (plan[0].get("fire_id") if plan else None) or self.fire.id
+        fire = next((f for f in self.fires if f.id == target_id and f.state != "extinguished"), None)
+        if fire is None:
+            return []
+        if plan is None:
+            plan = self.dispatch_plan
+            if not plan or any(p.get("fire_id") != target_id for p in plan):
+                plan = self.recommend_dispatch(target_id)
         id_map = {r.id: r for r in self.robots}
-        for p in chosen:
+        chosen = []
+        for p in plan:
+            if p.get("fire_id") != target_id or (selected_ids is not None and p["robot_id"] not in selected_ids):
+                continue
             r = id_map.get(p["robot_id"])
-            if r:
-                r.status = "on_mission"
-                r.mission = "en_route"
-                r.task = p["task"]
-                r.target_x = p["tx"]
-                r.target_y = p["ty"]
-                r.assigned_fire_id = self.fire.id
-                r.arrived = False
+            if (not r or r.status not in ("standby", "on_mission") or
+                    r.mission != "idle" or r.patrol_incomplete or r.assigned_fire_id or
+                    r.battery < ROBOT_LOW_BATTERY or r.temp > ROBOT_OVERHEAT_TEMP or
+                    r.thermal_rest or r.needs_refill):
+                continue
+            r.status = "on_mission"
+            r.mission = "en_route"
+            r.task = p["task"]
+            r.target_x = p["tx"]
+            r.target_y = p["ty"]
+            r.assigned_fire_id = target_id
+            r.arrived = False
+            r.spraying = False
+            self._ensure_robot_route(r)
+            self.log_collaboration("派遣", f"{p['task']} · {p['reason']}" + (" · 路径不可达" if r.route_failed else ""),
+                                   target_id, (r.id,), "warning" if r.route_failed else "info")
+            chosen.append(p)
         self.dispatch_plan = chosen
         if chosen:
             names = "、".join(p["robot_id"] for p in chosen)
-            self.push_event(f"指挥员已确认调度：{names} 前往扑救火点 {self.fire.id}", "success")
+            self.push_event(f"自动调度：{names} 前往扑救火点 {target_id}", "success")
+            self.tick.emit()
         return chosen
+
     def ignite_random_fire(self, origin: tuple[float, float] | None = None, auto_notify: bool = False) -> FireIncident:
-        """随机生成新火点（支持多火点），触发告警并通知指挥员确认调度。"""
+        """随机生成火点并自动调度，支持多火点。"""
         if origin is None:
-            ox = round(self.rng.uniform(0.24, 0.80), 3)
-            oy = round(self.rng.uniform(0.24, 0.76), 3)
-            origin = (ox, oy)
+            origin = self._random_reachable_fire_origin()
         self.fire_counter += 1
         fid = f"A-{self.fire_counter:02d}"
         intensity = round(self.rng.uniform(58.0, 86.0), 1)
@@ -839,93 +1260,89 @@ class SimEngine(QObject):
         self._milestones.clear()
         self.last_report = None
         self.replan()
-        self.recommend_dispatch()
         self.push_alert(
             f"发现新火点 {fid}！",
             f"热成像定位 ({origin[0]:.2f}, {origin[1]:.2f}) · 初始强度 {intensity:.0f}% · 面积 {area:.1f} ha",
             "critical", "火灾预警系统",
         )
-        self.push_event(f"火点 {fid} 触发警报，已生成推荐调度方案，等待指挥员确认…", "warning")
+        self.log_collaboration("发现", "发现火点，开始自动空地协作", fid, (), "warning")
+        self.push_event(f"火点 {fid} 触发警报，正在自动调度装备", "warning")
+        if self.auto_dispatch and not self.estop:
+            self._ensure_dispatch(fid)
         if auto_notify:
             self.fire_appeared.emit(new_fire)
         return new_fire
 
+    def active_fire_robots(self, fire_id: str | None = None) -> list[Robot]:
+        """返回正在执行活跃火点任务的装备，可按火点筛选。"""
+        active_ids = {f.id for f in self.fires if f.state != "extinguished"}
+        return [r for r in self.robots
+                if r.assigned_fire_id in active_ids
+                and (fire_id is None or r.assigned_fire_id == fire_id)
+                and r.status == "on_mission" and r.mission in ("recon", "en_route", "spraying")]
+
+    def _ensure_dispatch(self, fire_id: str) -> list[dict]:
+        """为火点补足空地编队；无可用装备时后续仿真步自动重试。"""
+        assigned = [r for r in self.robots if r.assigned_fire_id == fire_id
+                    and r.mission in ("en_route", "spraying") and r.status == "on_mission"]
+        needs = {"UAV": max(0, 2 - sum(r.kind == "UAV" for r in assigned)),
+                 "UGV": max(0, 3 - sum(r.kind == "UGV" for r in assigned))}
+        if not any(needs.values()):
+            self._collaboration_shortages.pop(fire_id, None)
+            return []
+        plan = self.recommend_dispatch(fire_id, store=False)
+        selected = []
+        handoffs = []
+        # 优先把过温装备的原任务交给同类型健康装备，避免仅补足数量却遗漏任务。
+        for handoff in self._pending_handoffs:
+            kind = handoff["kind"]
+            if handoff["fire_id"] != fire_id or needs[kind] <= 0:
+                continue
+            replacement = next((p for p in plan if p["kind"] == kind and p not in selected), None)
+            if replacement is None:
+                continue
+            replacement.update(task=handoff["task"], tx=handoff["tx"], ty=handoff["ty"])
+            selected.append(replacement)
+            handoffs.append((handoff, replacement["robot_id"]))
+            needs[kind] -= 1
+        for item in plan:
+            if item not in selected and needs[item["kind"]] > 0:
+                selected.append(item)
+                needs[item["kind"]] -= 1
+        chosen = self.confirm_dispatch(fire_id=fire_id, plan=selected) if selected else []
+        assigned_now = [r for r in self.robots if r.assigned_fire_id == fire_id
+                        and r.status == "on_mission" and r.mission in ("en_route", "spraying")]
+        missing = (max(0, 2 - sum(r.kind == "UAV" for r in assigned_now)),
+                   max(0, 3 - sum(r.kind == "UGV" for r in assigned_now)))
+        if any(missing) and self._collaboration_shortages.get(fire_id) != missing:
+            self.log_collaboration("等待补派", f"尚缺无人机 {missing[0]} 台、地面机器人 {missing[1]} 台；系统持续重试",
+                                   fire_id, (), "warning")
+            self._collaboration_shortages[fire_id] = missing
+        elif not any(missing):
+            self._collaboration_shortages.pop(fire_id, None)
+        chosen_ids = {item["robot_id"] for item in chosen}
+        for handoff, replacement_id in handoffs:
+            if replacement_id in chosen_ids:
+                self._pending_handoffs.remove(handoff)
+                self.log_collaboration("接替", f"接替任务：{handoff['task']}", fire_id,
+                                       (handoff['from_id'], replacement_id), "success")
+                self.push_event(f"{replacement_id} 接替 {handoff['from_id']} 执行火点 {fire_id} 的「{handoff['task']}」", "success")
+        return chosen
+
     def evaluate_and_dispatch(self) -> list[dict]:
-        """基于多维评判标准（能力匹配 40% + 距离 25% + 电量 20% + 载荷 15%）自主指派协同编队。"""
-        fx, fy = self.fire_origin
-        candidates = [r for r in self.robots if r.status != "offline" and r.battery >= 18.0]
-        plan: list[dict] = []
-
-        def score_robot(r: Robot, role: str) -> tuple[float, dict]:
-            dist = math.hypot(r.x - fx, r.y - fy)
-            dist_score = max(0.0, 100.0 * (1.0 - dist / 1.2))
-            bat_score = r.battery
-            pay_score = r.payload
-            if role == "recon":
-                cap_score = 100.0 if r.kind == "UAV" else 35.0
-            else:
-                cap_score = 100.0 if r.kind == "UGV" else 55.0
-            total = 0.40 * cap_score + 0.25 * dist_score + 0.20 * bat_score + 0.15 * pay_score
-            return round(total, 1), {
-                "cap": round(cap_score, 0),
-                "dist": round(dist, 2),
-                "bat": round(bat_score, 0),
-                "pay": round(pay_score, 0),
-            }
-
-        # 1. 选 1~2 架无人机负责空中侦察与压制引导
-        uavs = sorted([r for r in candidates if r.kind == "UAV"],
-                      key=lambda r: score_robot(r, "recon")[0], reverse=True)
-        # 2. 选 2~3 台地面机器人负责主攻灭火与隔离带
-        ugvs = sorted([r for r in candidates if r.kind == "UGV"],
-                      key=lambda r: score_robot(r, "suppress")[0], reverse=True)
-
-        selected: list[tuple[Robot, str, str, tuple[float, float]]] = []
-        if len(uavs) >= 1:
-            selected.append((uavs[0], "recon", "空中侦察 · 热源锁定", (fx - 0.04, fy - 0.06)))
-        if len(uavs) >= 2:
-            selected.append((uavs[1], "recon", "空中洒水 · 压制火头", (fx + 0.05, fy - 0.05)))
-        offsets = [(-0.06, 0.04), (0.06, 0.04), (0.0, 0.07)]
-        h_dir = "东侧" if fx < 0.5 else "西侧"
-        v_dir = "南线" if fy < 0.5 else "北线"
-        ugv_tasks = ["火线正面强攻", f"{h_dir}隔离带阻断", f"{v_dir}洒水降温"]
-        for idx, r in enumerate(ugvs[:3]):
-            ox, oy = offsets[idx]
-            selected.append((r, "suppress", ugv_tasks[idx], (fx + ox, fy + oy)))
-
-        for r in self.robots:
-            if r.status not in ("offline", "charging"):
-                r.spraying = False
-                r.mission = "idle"
-
-        for r, role, task_name, (tx, ty) in selected:
-            sc, bd = score_robot(r, role)
-            r.status = "on_mission"
-            r.mission = "en_route"
-            r.task = task_name
-            r.target_x = min(0.92, max(0.06, tx))
-            r.target_y = min(0.92, max(0.06, ty))
-            r.arrived = False
-            reason = (
-                f"综合 {sc} 分（能力 {bd['cap']:.0f} · 距火点 {bd['dist']:.2f} · "
-                f"电量 {bd['bat']:.0f}% · 载荷 {bd['pay']:.0f}%）"
-            )
-            plan.append({
-                "robot_id": r.id,
-                "name": r.name,
-                "kind": r.kind,
-                "task": task_name,
-                "score": sc,
-                "reason": reason,
-            })
-
-        self.dispatch_plan = plan
-        if plan:
-            names = "、".join(p["robot_id"] for p in plan)
-            self.push_event(f"自主调度完成：指派 {names} 协同扑救火点 {self.fire.id}", "success")
-        return plan
+        """为当前活跃火点生成并执行自主调度，不影响其他火点的任务。"""
+        return self._ensure_dispatch(self.fire.id)
 
     # ---------------- 业务动作 ----------------
+    def log_collaboration(self, kind: str, text: str, fire_id: str = "",
+                          robots: tuple[str, ...] = (), level: str = "info") -> None:
+        """记录真实发生的协同状态变化；仅保存在本次演练内。"""
+        event = {"time": datetime.now().strftime("%H:%M:%S"), "sim_time": self.sim_time,
+                 "kind": kind, "text": text, "fire_id": fire_id,
+                 "robots": tuple(robots), "level": level}
+        self.collaboration_events.insert(0, event)
+        del self.collaboration_events[200:]
+
     def push_event(self, text: str, level: str = "info") -> None:
         ev = {"time": datetime.now().strftime("%H:%M:%S"), "level": level, "text": text}
         self.events = ([ev] + self.events)[:40]
@@ -994,6 +1411,8 @@ class SimEngine(QObject):
         return "低风险", "success"
 
     def vision_scores(self) -> tuple[float, float, float]:
+        if not any(f.state != "extinguished" for f in self.fires):
+            return 0.0, 0.0, 100.0
         fire = min(99.4, self.fire_confidence + math.sin(self.started_at.second / 4) * 1.2)
         smoke = min(99.0, 88.0 + math.cos(self.started_at.second / 5) * 2.4)
         normal = max(0.6, 100 - fire - smoke * 0.18)

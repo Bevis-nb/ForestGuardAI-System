@@ -279,9 +279,9 @@ class InteractionPage(ScrollPage):
     def _dispatch(self, text: str):
         e = self.engine
         if any(k in text for k in ("返航", "回家")):
-            reply = "已向 4 架无人机下发返航指令，正在规划安全空域航路。"
-            e.robots[0].status = "returning"
-            e.robots[1].status = "returning"
+            reply = "已向 2 台装备下发返航指令，正在规划安全空域航路。"
+            e.return_robot(e.robots[0])
+            e.return_robot(e.robots[1])
             e.push_event("指挥员语音指令：无人机编队返航", "info")
             kind = "ok"
         elif any(k in text for k in ("急停", "停止", "中止")):

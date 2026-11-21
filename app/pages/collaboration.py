@@ -1,268 +1,157 @@
-"""多机器人协作页（对应系统设计 2.2）。"""
+"""多机器人协作：真实演练状态与协作日志。"""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView,
-    QComboBox,
-    QHBoxLayout,
-    QHeaderView,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
+    QAbstractItemView, QComboBox, QHeaderView, QTableWidget, QTableWidgetItem,
+    QHBoxLayout, QVBoxLayout,
 )
 
-from .. import icons, theme
-from ..canvas import FormationView, LinkDiagram
+from .. import theme
 from ..simulation import SimEngine
-from ..widgets import (
-    Pill,
-    ProgressLine,
-    StatCard,
-    button,
-    label as mk_label,
-    toast,
-)
-from ..widgets import label
-from .base import EventList, Panel, ScrollPage, hline, kv_chip
-
-
-PRIORITY_KIND = {"紧急": "critical", "高": "warning", "中": "info"}
+from ..widgets import Pill, StatCard, label
+from .base import Panel, ScrollPage
 
 
 class CollaborationPage(ScrollPage):
     def __init__(self, engine: SimEngine, parent=None):
-        super().__init__(
-            engine,
-            "多机器人协作",
-            "拍卖机制任务分配 · 空地联动闭环 · 分布式协商消解路径冲突",
-        )
-        self.add_action(Pill("MAS 协作在线", "success"))
-        self.add_action(button("自动分配", "soft", "sparkles", height=34, on_click=self._auto_allocate))
-        # 已移除发起拍卖按钮
+        super().__init__(engine, "多机器人协作", "按火点查看空地装备的实时任务，以及自动调度和接替过程")
+        self.add_action(Pill("自动协作 · 仿真", "info"))
 
-        self._build_stats()
+        stats = QHBoxLayout()
+        stats.setSpacing(12)
+        self.s_fires = StatCard("活跃火点", "0", "个", "flame", theme.RED, theme.RED_SOFT)
+        self.s_air = StatCard("投入无人机", "0", "台", "drone", theme.BLUE, theme.BLUE_SOFT)
+        self.s_ground = StatCard("投入地面机器人", "0", "台", "robot", theme.ACCENT, theme.ACCENT_SOFT)
+        self.s_working = StatCard("正在喷水", "0", "台", "activity", theme.CYAN, theme.BLUE_SOFT)
+        for card in (self.s_fires, self.s_air, self.s_ground, self.s_working):
+            card.setMinimumHeight(100)
+            stats.addWidget(card, 1)
+        self.root.addLayout(stats)
 
         body = QHBoxLayout()
         body.setSpacing(14)
-
-        # ---------------- 左：拍卖 + 协商 ----------------
         left = QVBoxLayout()
         left.setSpacing(14)
 
-        auction = Panel("拍卖式任务分配", "分布式竞价 · 按位置/负载/能力动态派单", "users")
-        auction.add_action(Pill("第 17 轮", "purple"))
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["任务", "区域 / 面积", "优先级", "收益", "中标单元", "状态"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setFixedHeight(232)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        auction.add(self.table)
-        hint = QHBoxLayout()
-        hint.addWidget(label("中标收益 = 报价 × 能力匹配 + 电量权重 − 距离惩罚", "caption"))
-        hint.addStretch(1)
-        self.auction_state = label("等待发起下一轮拍卖", "caption", color=theme.MUTED)
-        hint.addWidget(self.auction_state)
-        auction.addLayout(hint)
-        left.addWidget(auction, 1)
+        teams = Panel("火点协作编组", "实时读取已分配装备；不同火点互不抢占", "users")
+        teams.add_action(Pill("自动调度", "success", dot=False))
+        self.team_table = self._table(["火点", "状态", "无人机", "地面机器人", "赶赴 / 侦察", "现场喷水", "待补派"])
+        self.team_table.setMinimumHeight(210)
+        teams.add(self.team_table)
+        self.team_empty = label("暂无活跃火点，系统持续监测。", "caption", color=theme.MUTED)
+        teams.add(self.team_empty)
+        left.addWidget(teams)
 
-        # 新增：自主调度说明与评判标准面板
-        explain = Panel("自主协同调度 · 任务安排说明与评判标准",
-                        "评判标准：能力匹配 40% + 距火点距离 25% + 剩余电量 20% + 载荷/水量 15%", "sparkles")
-        explain.add_action(button("重新评估派单", "soft", "refresh", height=26,
-                                  on_click=self._re_evaluate))
-        self.dispatch_box = QVBoxLayout()
-        self.dispatch_box.setSpacing(6)
-        explain.addLayout(self.dispatch_box)
-        left.addWidget(explain, 1)
+        equipment = Panel("装备协作明细", "选中的火点正在执行任务的装备与阶段", "robot")
+        self.unit_table = self._table(["火点", "装备", "类型", "协作任务", "阶段", "电量 / 温度"])
+        self.unit_table.setMinimumHeight(275)
+        equipment.add(self.unit_table)
+        self.unit_empty = label("暂无正在执行火点任务的装备。", "caption", color=theme.MUTED)
+        equipment.add(self.unit_empty)
+        left.addWidget(equipment)
+        body.addLayout(left, 5)
 
-        negotiate = Panel("分布式协商 · 路径冲突消解", "基于优先级的让行协商，避免机间冲突", "link")
-        negotiate.add_action(Pill("冲突 2", "warning"))
-        self.neg_log = EventList(engine.events[:3], limit=4)
-        negotiate.add(self.neg_log)
-        negotiate.content.addStretch(1)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        row.addWidget(kv_chip("signal", "通信时延 42 ms"))
-        row.addWidget(kv_chip("shield", "冲突消解率 100%"))
-        row.addStretch(1)
-        row.addWidget(button("查看协商拓扑", "ghost", height=28, size=11,
-                             on_click=lambda: toast(self, "已生成 8 节点协商拓扑图")))
-        negotiate.addLayout(row)
-        left.addWidget(negotiate, 1)
-        body.addLayout(left, 3)
-
-        # ---------------- 右：联动 + 编队 ----------------
         right = QVBoxLayout()
-        right.setSpacing(14)
-
-        linkage = Panel("空中—地面联动", "「侦察—打击」闭环 · 秒级目标级联", "drone")
-        linkage.add_action(Pill("链路正常", "success"))
-        self.link_view = LinkDiagram(engine)
-        self.link_view.setMinimumHeight(188)
-        linkage.add(self.link_view, 1)
-        flow = QHBoxLayout()
-        flow.setSpacing(6)
-        for i, (text, color) in enumerate((("无人机侦察", theme.BLUE),
-                                           ("火源定位", theme.AMBER),
-                                           ("任务下发", theme.PURPLE),
-                                           ("地面扑打", theme.ACCENT))):
-            chip = mk_label(text, None, color=color, size=11, weight=700)
-            chip.setStyleSheet(
-                f"color:{color}; background:{theme.SURFACE_ALT}; border-radius:8px;"
-                f" padding:4px 8px; font-size:11px; font-weight:700;"
-            )
-            flow.addWidget(chip)
-            if i < 3:
-                arrow = mk_label("→", None, color=theme.MUTED_LIGHT, size=11)
-                flow.addWidget(arrow)
-        linkage.addLayout(flow)
-        right.addWidget(linkage, 3)
-
-        formation = Panel("灭火编队阵列", "多机同步推进，扩大覆盖面积", "robot")
-        self.formation_combo = QComboBox()
-        self.formation_combo.addItems(["楔形推进", "线性阵列", "弧形包围"])
-        self.formation_combo.setFixedWidth(120)
-        self.formation_combo.currentTextChanged.connect(self._on_formation)
-        formation.add_action(self.formation_combo)
-        self.formation_view = FormationView(engine)
-        self.formation_view.setMinimumHeight(126)
-        formation.add(self.formation_view, 1)
-        self.coverage_bar = ProgressLine("覆盖面积", 36, theme.ACCENT, suffix=" %")
-        self.coverage_bar.setToolTip("相对目标覆盖面积 10 ha")
-        self.coverage_bar.setFixedHeight(36)
-        formation.add(self.coverage_bar)
-        self.coverage_label = label("", "caption")
-        formation.add(self.coverage_label)
-        right.addWidget(formation, 2)
-        body.addLayout(right, 2)
-
-        self.root.addLayout(body, 1)
-
+        log_panel = Panel("协作日志", "按时间倒序 · 记录实际派遣、侦察、到场、接替和扑灭", "activity")
+        self.fire_filter = QComboBox()
+        self.fire_filter.addItem("全部火点", "")
+        self.fire_filter.setMinimumWidth(125)
+        self.fire_filter.currentIndexChanged.connect(self._refresh)
+        log_panel.add_action(self.fire_filter)
+        self.log_table = self._table(["演练时间", "火点", "事件", "涉及装备", "协作过程"])
+        self.log_table.setMinimumHeight(480)
+        log_panel.add(self.log_table, 1)
+        self.log_empty = label("暂无协作记录。发现火情后将自动记录。", "caption", color=theme.MUTED)
+        log_panel.add(self.log_empty)
+        log_panel.add(label("最多保留本次演练最近 200 条；日志不代表真实通信或路径冲突消解。", "caption", color=theme.MUTED))
+        right.addWidget(log_panel, 1)
+        body.addLayout(right, 6)
+        self.root.addLayout(body)
+        self._filter_signature = None
+        self._snapshot = None
         engine.tick.connect(self._refresh)
-        self._fill_table()
         self._refresh()
 
-    # ------------------------------------------------------------------
-    def _build_stats(self):
-        row = QHBoxLayout()
-        row.setSpacing(14)
-        self.s_online = StatCard("在线装备", "8", "台", "robot", theme.ACCENT, theme.ACCENT_SOFT,
-                                 "100%", "flat", [6, 7, 7, 8, 8, 8, 8])
-        self.s_tasks = StatCard("任务队列", "5", "项", "layers", theme.BLUE, theme.BLUE_SOFT,
-                                "2 待分配", "flat", [3, 4, 5, 4, 6, 5, 5])
-        self.s_rounds = StatCard("拍卖轮次", "17", "轮", "users", theme.PURPLE, theme.PURPLE_SOFT,
-                                 "本轮 0.8s", "flat", [8, 9, 11, 12, 14, 15, 17])
-        self.s_conflict = StatCard("协商冲突", "2", "次", "link", theme.AMBER, theme.AMBER_SOFT,
-                                   "全部消解", "flat", [5, 4, 4, 3, 3, 2, 2])
-        for c in (self.s_online, self.s_tasks, self.s_rounds, self.s_conflict):
-            c.setFixedHeight(92)
-            row.addWidget(c, 1)
-        self.root.addLayout(row)
+    @staticmethod
+    def _table(headers: list[str]) -> QTableWidget:
+        table = QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.verticalHeader().setVisible(False)
+        table.setShowGrid(False)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setWordWrap(False)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(len(headers) - 1, QHeaderView.ResizeMode.Stretch)
+        return table
 
-    def _fill_table(self):
-        tasks = self.engine.tasks
-        self.table.setRowCount(len(tasks))
-        for i, t in enumerate(tasks):
-            self.table.setItem(i, 0, QTableWidgetItem(f"{t['id']}  {t['name']}"))
-            self.table.setItem(i, 1, QTableWidgetItem(t["pos"]))
-            pri = QTableWidgetItem(t["priority"])
-            color, _ = theme.SEVERITY[PRIORITY_KIND.get(t["priority"], "info")]
-            pri.setForeground(QColor(color))
-            self.table.setItem(i, 2, pri)
-            self.table.setItem(i, 3, QTableWidgetItem(f"{t['reward']}"))
-            self.table.setItem(i, 4, QTableWidgetItem(t["robot"]))
-            self.table.setItem(i, 5, QTableWidgetItem(t["status"]))
-            self.table.setRowHeight(i, 38)
+    @staticmethod
+    def _set_rows(table: QTableWidget, rows: list[list[str]]) -> None:
+        table.setRowCount(len(rows))
+        for row, values in enumerate(rows):
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                table.setItem(row, col, item)
+            table.setRowHeight(row, 34)
 
-    def _auction(self):
-        pending = [i for i, t in enumerate(self.engine.tasks) if t["status"] in ("待分配", "已派发")]
-        if not pending:
-            toast(self, "当前没有待拍卖任务，可先下发新任务", "info")
-            return
-        idx = pending[0]
-        best = self.engine.run_auction(idx)
-        self._fill_table()
-        self.auction_state.setText(f"{self.engine.tasks[idx]['id']} 由 {best.id} 中标 · 耗时 0.8 s")
-        self.neg_log.set_events(self.engine.events[:4])
-        toast(self, f"任务「{self.engine.tasks[idx]['name']}」由 {best.id} 中标")
-
-    def _auto_allocate(self):
-        count = 0
-        for i, t in enumerate(self.engine.tasks):
-            if t["status"] == "待分配":
-                self.engine.run_auction(i)
-                count += 1
-        self._fill_table()
-        self.neg_log.set_events(self.engine.events[:4])
-        if count:
-            toast(self, f"自动分配完成，共派发 {count} 项任务")
-        else:
-            toast(self, "所有任务均已分配，编队保持当前任务", "info")
-
-    def _on_formation(self, text: str):
-        self.engine.formation = text
-        self.engine.push_event(f"灭火编队切换为「{text}」阵列，覆盖宽度同步调整", "info")
-        self.neg_log.set_events(self.engine.events[:4])
-        toast(self, f"编队已切换为 {text}")
-
-    def _re_evaluate(self):
-        self.engine.evaluate_and_dispatch()
-        self._refresh_dispatch()
-        toast(self, "已根据最新火点与装备状态重新评估并指派编队", "success")
-
-    def _refresh_dispatch(self):
-        while self.dispatch_box.count():
-            item = self.dispatch_box.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-        plan = self.engine.dispatch_plan
-        if not plan:
-            self.dispatch_box.addWidget(label("暂无调度记录，点击「重新评估派单」生成", "caption", color=theme.MUTED))
-            return
-        for p in plan:
-            row_w = QWidget()
-            row_l = QHBoxLayout(row_w)
-            row_l.setContentsMargins(6, 4, 6, 4)
-            row_l.setSpacing(8)
-            kind = "info" if p["kind"] == "UAV" else "success"
-            row_l.addWidget(Pill(f"{p['robot_id']}", kind, dot=False))
-            row_l.addWidget(mk_label(p["task"], None, size=12, weight=700))
-            row_l.addWidget(mk_label(p["reason"], None, color=theme.MUTED, size=11), 1)
-            self.dispatch_box.addWidget(row_w)
-
-    def _refresh(self):
-        self._refresh_dispatch()
+    def _refresh(self, *_):
         e = self.engine
-        self.s_tasks.set_value(str(sum(1 for t in e.tasks if t["status"] == "待分配")))
-        self.coverage = e.coverage
-        self.coverage_bar.set_value(min(100, e.coverage / 10 * 100))
-        self.coverage_label.setText(
-            f"编队覆盖 {e.coverage:.1f} ha · 相邻重叠率 12% · 推进速度 1.1 m/s"
-        )
-        self.neg_log.set_events(e.events[:4])
-        for row in range(self.table.rowCount()):
-            t = e.tasks[row]
-            if self.table.item(row, 5) and self.table.item(row, 5).text() != t["status"]:
-                self.table.item(row, 5).setText(t["status"])
+        active = sorted((f for f in e.fires if f.state != "extinguished"), key=lambda f: (f.ignited_at, f.id))
+        units = e.active_fire_robots()
+        self.s_fires.set_value(str(len(active)))
+        self.s_air.set_value(str(sum(r.kind == "UAV" for r in units)))
+        self.s_ground.set_value(str(sum(r.kind == "UGV" for r in units)))
+        self.s_working.set_value(str(sum(e.spray_target(r) is not None for r in units)))
 
+        fire_ids = sorted({f.id for f in active} | {event["fire_id"] for event in e.collaboration_events if event["fire_id"]})
+        if tuple(fire_ids) != self._filter_signature:
+            selected = self.fire_filter.currentData() or ""
+            self.fire_filter.blockSignals(True)
+            self.fire_filter.clear()
+            self.fire_filter.addItem("全部火点", "")
+            for fid in fire_ids:
+                self.fire_filter.addItem(fid, fid)
+            self.fire_filter.setCurrentIndex(max(0, self.fire_filter.findData(selected)))
+            self.fire_filter.blockSignals(False)
+            self._filter_signature = tuple(fire_ids)
+        selected = self.fire_filter.currentData() or ""
 
-def hline_row():
-    from PySide6.QtWidgets import QFrame
+        team_rows = []
+        unit_rows = []
+        states = {"suspicious": "待侦察", "spreading": "蔓延中", "suppressing": "扑救中", "contained": "已控制"}
+        for fire in active:
+            if selected and fire.id != selected:
+                continue
+            team = [r for r in units if r.assigned_fire_id == fire.id]
+            air = sum(r.kind == "UAV" for r in team)
+            ground = sum(r.kind == "UGV" for r in team)
+            working = sum(e.spray_target(r) is not None for r in team)
+            travelling = sum(r.mission in ("en_route", "recon") and not r.route_failed for r in team)
+            if fire.state == "suspicious":
+                missing = "侦察无人机 1" if not any(r.mission == "recon" for r in team) else "—"
+            else:
+                missing = f"无人机 {max(0, 2 - air)} / 地面 {max(0, 3 - ground)}"
+            team_rows.append([fire.id, states.get(fire.state, fire.state), str(air), str(ground),
+                              str(travelling), str(working), missing])
+            for r in sorted(team, key=lambda unit: (unit.kind, unit.id)):
+                stage = ("路径不可达" if r.route_failed else "急停" if e.estop else
+                         "现场喷水" if e.spray_target(r) else
+                         {"recon": "侦察中", "en_route": "赶赴中", "spraying": "等待喷水"}.get(r.mission, r.status_text))
+                unit_rows.append([fire.id, r.id, "无人机" if r.kind == "UAV" else "地面机器人",
+                                  r.task, stage, f"{r.battery:.0f}% / {r.temp:.1f}℃"])
+        self._set_rows(self.team_table, team_rows)
+        self._set_rows(self.unit_table, unit_rows)
+        self.team_empty.setVisible(not team_rows)
+        self.unit_empty.setVisible(not unit_rows)
 
-    line = QFrame()
-    line.setObjectName("Divider")
-    line.setFixedHeight(1)
-    return line
+        events = [item for item in e.collaboration_events if not selected or item["fire_id"] == selected]
+        log_rows = [[f"T+{int(item['sim_time'])}s", item["fire_id"] or "—", item["kind"],
+                     " → ".join(item["robots"]) or "—", item["text"]] for item in events]
+        signature = tuple(tuple(row) for row in log_rows)
+        if signature != self._snapshot:
+            self._set_rows(self.log_table, log_rows)
+            self.log_empty.setVisible(not log_rows)
+            self._snapshot = signature

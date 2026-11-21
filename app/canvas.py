@@ -56,6 +56,7 @@ class TerrainMap(QWidget):
     clicked_map = Signal(float, float)
     hovered = Signal(str)
     robot_selected = Signal(str)
+    fire_selected = Signal(str)
 
     def __init__(self, engine: SimEngine, mode: str = "overview", parent=None,
                  show_legend: bool = True):
@@ -71,6 +72,10 @@ class TerrainMap(QWidget):
         self.phase = 0.0
         self.minutes = 30
         self.selected_robot = None
+        self.selected_fire_id = None
+        self.select_fires = False
+        self._prediction_key = None
+        self._prediction = None
         self._show_robots = True
         self._highlight = 0.0
         self._static: QPixmap | None = None
@@ -299,9 +304,11 @@ class TerrainMap(QWidget):
             self._paint_heat(p, r)
         self._paint_bases(p, r)
         self._paint_fire(p, r)
-        if self.show_path:
+        if self.show_path or (self._show_robots and self.mode == "analysis"):
             self._paint_path(p, r)
         self._paint_robots(p, r)
+        if self._show_robots:
+            self._paint_spray(p)
         p.restore()
         self._paint_compass(p, r)
         if self.show_legend:
@@ -309,12 +316,25 @@ class TerrainMap(QWidget):
         p.end()
 
     # ------------------------------------------------------------------
+    def set_selected_fire(self, fire_id: str | None):
+        if self.selected_fire_id != fire_id:
+            self.selected_fire_id = fire_id
+            self._prediction_key = None
+            self.update()
+
     def _paint_heat(self, p: QPainter, r: QRectF):
-        grid = self._spread.grid(self.minutes, self.engine.wind_deg,
-                                 self.engine.wind_speed, self.engine.humidity,
-                                 self.engine.fire_origin)
+        fires = [f for f in self.engine.fires if f.state != "extinguished"]
+        if not fires:
+            return
+        key = (tuple((f.id, f.origin, f.intensity, f.state) for f in fires), self.minutes,
+               self.engine.wind_deg, self.engine.wind_speed, self.engine.humidity)
+        if key != self._prediction_key:
+            self._prediction = self._spread.assess_all(fires, self.minutes, self.engine.wind_deg,
+                                                       self.engine.wind_speed, self.engine.humidity)
+            self._prediction_key = key
+        prediction = self._prediction
+        grid = prediction["grid"]
         h, w = len(grid), len(grid[0])
-        # 低分辨率置信场 -> 平滑放大，避免网格感
         img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
         img.fill(0)
         for y in range(h):
@@ -323,38 +343,40 @@ class TerrainMap(QWidget):
                 if v < 0.10:
                     continue
                 if v > 0.66:
-                    color = QColor(226, 62, 66, int(150 + v * 90))
+                    color = QColor(226, 62, 66, int(110 + v * 70))
                 elif v > 0.40:
-                    color = QColor(240, 146, 52, int(110 + v * 70))
+                    color = QColor(240, 146, 52, int(80 + v * 70))
                 else:
-                    color = QColor(248, 202, 118, int(50 + v * 60))
+                    color = QColor(248, 202, 118, int(45 + v * 60))
                 img.setPixelColor(x, y, color)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         p.drawImage(r, img)
 
-        # 每个活跃火点各自生成一条下风向建议隔离带
-        fires = [f for f in getattr(self.engine, "fires", []) if not f.extinguished]
-        if not fires and hasattr(self.engine, "fire"):
-            fires = [self.engine.fire]
-        for f in fires:
-            fx, fy = f.origin
-            rad = math.radians(self.engine.wind_deg)
-            dx, dy = math.cos(rad) * 0.08, math.sin(rad) * 0.08
-            px, py = -math.sin(rad) * 0.10, math.cos(rad) * 0.10
-            p1 = QPointF(r.left() + r.width() * (fx + dx - px), r.top() + r.height() * (fy + dy - py))
-            p2 = QPointF(r.left() + r.width() * (fx + dx * 1.2), r.top() + r.height() * (fy + dy * 1.2))
-            p3 = QPointF(r.left() + r.width() * (fx + dx + px), r.top() + r.height() * (fy + dy + py))
-            iso = QPainterPath(p1)
-            iso.quadTo(p2, p3)
-            p.setPen(QPen(C("#FFFFFF"), 6))
+        # 每条隔离带对应一个火点；选中的火点加粗，无法避让时标红提示复核。
+        ordered = sorted(fires, key=lambda f: f.id == self.selected_fire_id)
+        for fire in ordered:
+            item = prediction["fires"][fire.id]
+            points = [self.pt(point) for point in item["line"]]
+            path = QPainterPath(points[0])
+            for point in points[1:]:
+                path.lineTo(point)
+            selected = fire.id == self.selected_fire_id
+            color = C(theme.RED if item["line_conflict"] else theme.AMBER)
+            # 透明宽线表示隔离带的面积；中心虚线是建议路径。
+            width = max(6.0, item["width_m"] / 1200 * r.width())
+            band = QColor(color)
+            band.setAlpha(75 if selected else 50)
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawPath(iso)
-            pen = QPen(C(theme.AMBER), 3)
-            pen.setStyle(Qt.PenStyle.DashLine)
-            pen.setDashPattern([4, 4])
-            p.setPen(pen)
-            p.drawPath(iso)
-        p.setPen(Qt.PenStyle.NoPen)
+            p.setPen(QPen(band, width + 3, Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            p.drawPath(path)
+            p.setPen(QPen(C("#FFFFFF"), 4 if selected else 3))
+            p.drawPath(path)
+            p.setPen(QPen(color, 2.5 if selected else 1.5, Qt.PenStyle.DashLine))
+            p.drawPath(path)
+            p.setFont(_font(9 if selected else 8, 700))
+            p.setPen(QPen(color))
+            p.drawText(points[len(points) // 2] + QPointF(4, -7), fire.id)
 
     def highlight_fire(self):
         self._highlight = 3.2
@@ -378,7 +400,13 @@ class TerrainMap(QWidget):
         if not fires:
             return
         for f in fires:
+            if self.select_fires and f.state == "extinguished":
+                continue
             center = self.pt(f.origin)
+            if self.select_fires and f.id == self.selected_fire_id:
+                p.setPen(QPen(C("#FFFFFF"), 3))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(center, 16, 16)
             if f.state == "extinguished" or f.intensity <= 0.1:
                 p.setPen(QPen(C(theme.ACCENT), 2))
                 p.setBrush(QColor(18, 166, 106, 40))
@@ -439,53 +467,39 @@ class TerrainMap(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
 
     def _paint_path(self, p: QPainter, r: QRectF):
-        path_pts = [self.pt(xy) for xy in self.engine.plan.path]
-        path = QPainterPath(path_pts[0])
-        for i in range(1, len(path_pts)):
-            a, b = path_pts[i - 1], path_pts[i]
-            mid = (a + b) / 2
-            path.quadTo(a, mid)
+        robots = ([rb for rb in self.engine.robots if rb.id == self.selected_robot]
+                  if self.mode == "navigation" else self.engine.robots)
+        for robot in robots:
+            points = self.engine.remaining_route(robot)
+            if len(points) < 2:
+                continue
+            path = QPainterPath(self.pt(points[0]))
+            for point in points[1:]:
+                path.lineTo(self.pt(point))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            pen = QPen(QColor(theme.ACCENT if robot.kind == "UGV" else theme.BLUE),
+                       3 if self.mode == "navigation" else 1.5, Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            p.drawPath(path)
+            if self.mode == "navigation":
+                self._draw_route_finish(p, self.pt(points[-1]))
 
-        pen = QPen(QColor(255, 255, 255, 200), 7)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(path)
-
-        grad = QLinearGradient(path_pts[0], path_pts[-1])
-        grad.setColorAt(0.0, C(theme.ACCENT))
-        grad.setColorAt(0.6, C(theme.ACCENT_LIGHT))
-        grad.setColorAt(1.0, C(theme.AMBER))
-        pen = QPen(QBrush(grad), 3.2)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setStyle(Qt.PenStyle.DashLine)
-        pen.setDashPattern([6, 4])
-        pen.setDashOffset(-self.phase * 10)
-        p.setPen(pen)
-        p.drawPath(path)
-
-        start = path_pts[0]
-        end = path_pts[-1]
+    def _draw_route_finish(self, p: QPainter, end: QPointF):
+        """终点为旗杆底部，用矢量绘制棋盘旗避免依赖 emoji 字体。"""
+        p.save()
+        p.setPen(QPen(QColor("#263C32"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawLine(end, end + QPointF(0, -22))
+        flag = QRectF(end.x(), end.y() - 22, 16, 12)
+        p.setPen(QPen(QColor("#263C32"), 1))
+        p.setBrush(QColor("#FFFFFF"))
+        p.drawRect(flag)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(C("#FFFFFF"))
-        p.drawEllipse(start, 8, 8)
-        p.setBrush(C(theme.ACCENT))
-        p.drawEllipse(start, 4.6, 4.6)
-        p.setFont(_font(9, 700))
-        p.setPen(C(theme.ACCENT_DARK))
-        p.drawText(QPointF(start.x() + 12, start.y() + 4), "起点")
-
-        # 火点目标标记
-        p.setBrush(QColor(255, 255, 255, 220))
-        p.setPen(QPen(C(theme.AMBER), 2))
-        p.drawEllipse(end, 9, 9)
-        p.setPen(QPen(C(theme.AMBER), 2))
-        p.drawLine(end + QPointF(-13, 0), end + QPointF(-5, 0))
-        p.drawLine(end + QPointF(5, 0), end + QPointF(13, 0))
-        p.drawLine(end + QPointF(0, -13), end + QPointF(0, -5))
-        p.drawLine(end + QPointF(0, 5), end + QPointF(0, 13))
-
-        # 沿路径运动的机器人（已移除假循环动画，由 SimEngine 实时驱动）
+        p.setBrush(QColor("#263C32"))
+        for row in range(2):
+            for col in range(4):
+                if (row + col) % 2 == 0:
+                    p.drawRect(QRectF(flag.x() + col * 4, flag.y() + row * 6, 4, 6))
+        p.restore()
 
     def _paint_lidar(self, p: QPainter, r: QRectF):
         robot = next((x for x in self.engine.robots if x.id == "UGV-01"), self.engine.robots[0])
@@ -517,12 +531,9 @@ class TerrainMap(QWidget):
     def _paint_robots(self, p: QPainter, r: QRectF):
         if not self._show_robots:
             return
-        fire_pt = self.pt(self.engine.fire_origin)
         for robot in self.engine.robots:
-            if self.mode == "navigation" and robot.kind == "UGV":
-                continue
             pos = self.pt((robot.x, robot.y))
-            if robot.battery < 20 or robot.temp > 50 or robot.status == "offline":
+            if robot.battery <= 20 or robot.temp > 60 or robot.status == "offline":
                 color = theme.RED          # 危险中
             elif robot.mission in ("en_route", "spraying", "recon"):
                 color = "#F59E0B"          # 被调度中
@@ -530,26 +541,6 @@ class TerrainMap(QWidget):
                 color = theme.ACCENT       # 巡逻中
             else:
                 color = theme.BLUE         # 待命 / 充电中
-
-            # 赶赴火点虚线轨迹
-            if robot.mission == "en_route":
-                tpt = self.pt((robot.target_x, robot.target_y))
-                pen = QPen(QColor(color), 1.4, Qt.PenStyle.DashLine)
-                pen.setDashPattern([4, 4])
-                p.setPen(pen)
-                p.drawLine(pos, tpt)
-
-            # 灭火喷洒水柱 / 粒子动画
-            if robot.spraying and self.engine.fire.state != "extinguished":
-                p.setPen(QPen(QColor(24, 174, 196, 160), 2.2))
-                p.drawLine(pos, fire_pt)
-                p.setPen(Qt.PenStyle.NoPen)
-                for k in range(4):
-                    t = (self.phase * 1.4 + k * 0.25) % 1.0
-                    sx = pos.x() + (fire_pt.x() - pos.x()) * t
-                    sy = pos.y() + (fire_pt.y() - pos.y()) * t
-                    p.setBrush(QColor(56, 189, 248, int(220 * (1 - t * 0.5))))
-                    p.drawEllipse(QPointF(sx, sy), 3.2, 3.2)
 
             is_docked = robot.mission == "idle" and robot.status in ("standby", "charging")
             if is_docked:
@@ -566,6 +557,25 @@ class TerrainMap(QWidget):
                              color, "",
                              highlight=robot.id == self.selected_robot,
                              small=is_docked)
+
+    def _paint_spray(self, p: QPainter):
+        """绘制实际有效的喷洒，单独置于设备和火点图标之上。"""
+        for robot in self.engine.robots:
+            fire = self.engine.spray_target(robot)
+            if fire is None:
+                continue
+            start = self.pt((robot.x, robot.y))
+            end = self.pt(fire.origin)
+            p.setPen(QPen(QColor(255, 255, 255, 210), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(start, end)
+            p.setPen(QPen(QColor(0, 155, 215, 235), 2.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(start, end)
+            p.setPen(Qt.PenStyle.NoPen)
+            for k in range(4):
+                t = (self.phase * 1.4 + k * 0.25) % 1.0
+                pt = start + (end - start) * t
+                p.setBrush(QColor(56, 189, 248, int(220 * (1 - t * 0.5))))
+                p.drawEllipse(pt, 2.8, 2.8)
 
     def _draw_badge(self, p: QPainter, pos: QPointF, icon_name: str, color: str,
                     text: str, highlight: bool = False, small: bool = False):
@@ -627,7 +637,9 @@ class TerrainMap(QWidget):
             (theme.ACCENT, "巡逻中"),
             (theme.ACCENT_DARK, "基地"),
         ]
-        if self.show_heat:
+        if self.select_fires:
+            items = [(theme.RED, "火点"), ("#F09234", "潜在燃烧区"), (theme.AMBER, "建议隔离带")]
+        elif self.show_heat:
             items.append((theme.AMBER, "蔓延概率"))
         x = r.left() + 15
         y = r.top() + 18
@@ -646,7 +658,15 @@ class TerrainMap(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self._content().contains(event.position()):
             pos = event.position()
-            for r in self.engine.robots:
+            if self.select_fires:
+                active = [f for f in self.engine.fires if f.state != "extinguished"]
+                nearest = min(active, key=lambda f: math.hypot(pos.x() - self.pt(f.origin).x(),
+                                                                 pos.y() - self.pt(f.origin).y()), default=None)
+                if nearest and math.hypot(pos.x() - self.pt(nearest.origin).x(),
+                                          pos.y() - self.pt(nearest.origin).y()) <= 24:
+                    self.fire_selected.emit(nearest.id)
+                return
+            for r in self.engine.robots if self._show_robots else []:
                 pt = self.pt((r.x, r.y))
                 if math.hypot(pos.x() - pt.x(), pos.y() - pt.y()) <= 20:
                     self.selected_robot = r.id
@@ -1103,9 +1123,9 @@ _ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 _feed_cache: dict[str, QPixmap] = {}
 
 
-def feed_pixmap(mode: str = "eo") -> QPixmap:
-    """加载实拍无人机画面（EO / 红外），带缓存。"""
-    key = "feed_ir" if mode == "ir" else "feed_eo"
+def feed_pixmap(mode: str = "eo", fire_active: bool = True) -> QPixmap:
+    """加载演示素材：按可见光/红外与火情状态选择，并缓存。"""
+    key = ("feed_ir" if mode == "ir" else "feed_eo") + ("" if fire_active else "_clear")
     if key not in _feed_cache:
         pm = QPixmap(os.path.join(_ASSET_DIR, f"{key}.jpg"))
         _feed_cache[key] = pm
@@ -1113,7 +1133,7 @@ def feed_pixmap(mode: str = "eo") -> QPixmap:
 
 
 class VideoFeed(QWidget):
-    """无人机实时视频画面：真实航拍底图 + 遥测 OSD + 目标框。"""
+    """无人机视频演示画面：根据火情切换素材，并叠加模拟遥测。"""
 
     def __init__(self, engine: SimEngine | None = None, mode: str = "eo",
                  connected: bool = True, parent=None, show_boxes: bool = True):
@@ -1130,6 +1150,11 @@ class VideoFeed(QWidget):
         self._timer.setInterval(80)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
+        if self.engine is not None:
+            self.engine.tick.connect(self.update)
+
+    def _has_active_fire(self) -> bool:
+        return self.engine is not None and any(f.state != "extinguished" for f in self.engine.fires)
 
     # ------------------------------------------------------------------
     def _tick(self):
@@ -1155,8 +1180,9 @@ class VideoFeed(QWidget):
         self.update()
 
     # ------------------------------------------------------------------
-    def _cover_source(self, target_ratio: float) -> QRectF:
-        pm = feed_pixmap(self.mode)
+    def _cover_source(self, target_ratio: float, pm: QPixmap | None = None) -> QRectF:
+        if pm is None:
+            pm = feed_pixmap(self.mode, self._has_active_fire())
         if pm.isNull():
             return QRectF()
         sw, sh = pm.width(), pm.height()
@@ -1191,8 +1217,8 @@ class VideoFeed(QWidget):
             p.end()
             return
 
-        pm = feed_pixmap(self.mode)
-        src = self._cover_source(r.width() / max(1, r.height()))
+        pm = feed_pixmap(self.mode, self._has_active_fire())
+        src = self._cover_source(r.width() / max(1, r.height()), pm)
         p.drawPixmap(r, pm, src)
 
         # 动态噪点 + 扫描线 + 暗角
@@ -1306,7 +1332,7 @@ class VideoFeed(QWidget):
             p.drawText(QRectF(w - 96, h - 52, 70, 14), Qt.AlignmentFlag.AlignRight, "ZOOM ×1.0")
 
         # 目标框
-        if self.show_boxes:
+        if self.show_boxes and self._has_active_fire():
             fire = (0.44, 0.46, 0.40, 0.34)
             smoke = (0.52, 0.15, 0.40, 0.28)
             p.setFont(_font(8.5, 700))
@@ -1525,7 +1551,7 @@ class FirstPerson3DView(QWidget):
                     p.drawText(QPointF(sx - 28, sy - 18), "火点已扑灭 ✓")
 
         # 第一人称喷水灭火水柱特效
-        if self.spraying:
+        if self.robot is not None and self.engine.spray_target(self.robot) is not None:
             p.setPen(QPen(QColor(56, 189, 248, 190), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             p.drawLine(QPointF(w * 0.5, h), QPointF(w * 0.5, horizon_y + 12))
             p.setPen(Qt.PenStyle.NoPen)
