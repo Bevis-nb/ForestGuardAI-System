@@ -249,8 +249,7 @@ class AnalysisPage(ScrollPage):
         toast(self, "已根据最新态势重新生成处置方案")
 
     def _confirm(self):
-        self.apply_btn.setText("方案已下发")
-        self.apply_btn.setEnabled(False)
+        # 方案已自动生效
         self.engine.push_event("指挥员确认处置方案，任务已下发至 8 台装备", "success")
         self.engine.push_alert("处置方案已下发", "3 组力量进入预定位置，10 分钟内完成展开", "info", "指挥终端")
         toast(self, "处置方案已下发，各编队开始执行")
