@@ -284,14 +284,33 @@ class RemoteControlDialog(QDialog):
         content = QHBoxLayout()
         content.setSpacing(12)
 
-        # 左：3D 第一人称视角 + 按键提示
+        # 左：灭火视频播放区（支持本地视频 assets/videos/firefighting_demo.mp4）
         left = QVBoxLayout()
         left.setSpacing(7)
+        import os
+        video_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                                  "assets", "videos", "firefighting_demo.mp4")
         self.feed = FirstPerson3DView(engine, robot)
-        self.feed.setMinimumHeight(300)
-        left.addWidget(self.feed, 1)
+        if os.path.exists(video_path):
+            try:
+                from PySide6.QtCore import QUrl
+                from PySide6.QtMultimedia import QMediaPlayer
+                from PySide6.QtMultimediaWidgets import QVideoWidget
+                vw = QVideoWidget()
+                vw.setMinimumHeight(300)
+                player = QMediaPlayer(self)
+                player.setVideoOutput(vw)
+                player.setSource(QUrl.fromLocalFile(video_path))
+                player.setLoops(QMediaPlayer.Loops.Infinite)
+                player.play()
+                self._player = player
+                left.addWidget(vw, 1)
+            except Exception:
+                left.addWidget(self.feed, 1)
+        else:
+            left.addWidget(self.feed, 1)
 
-        hint = QLabel("W/S 前进后退 · A/D 或 J/L 左右转动视角 · I/K 俯仰 · 鼠标拖拽视角 · ESC 关闭")
+        hint = QLabel(f"视频路径：assets/videos/firefighting_demo.mp4（放入视频后自动循环播放；当前使用实时视角兜底）")
         hint.setStyleSheet("color:#7C8F87; font-size:10.5px; background:transparent;")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         left.addWidget(hint)

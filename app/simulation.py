@@ -230,6 +230,14 @@ class FireSpreadModel:
 # ---------------------------------------------------------------------------
 # 运行状态
 # ---------------------------------------------------------------------------
+BASES = [
+    ("B-01", "北山基地", 0.12, 0.22),
+    ("B-02", "西林基地", 0.14, 0.78),
+    ("B-03", "东坡基地", 0.86, 0.24),
+    ("B-04", "南谷基地", 0.84, 0.80),
+]
+
+
 @dataclass
 class FireIncident:
     """一次火情事件：强度 / 面积 / 控制率随时间演化，可被扑灭。"""
@@ -392,9 +400,10 @@ class SimEngine(QObject):
             r.water_l = r.water_cap * (r.payload / 100.0)
             r.suppression_power = 0.45 if kind == "UAV" else 1.25
             r.temp = [24.5, 25.1, 24.9, 23.8, 41.2, 44.6, 39.8, 47.3][i]
-            r.status = ["on_mission", "on_mission", "on_mission", "standby",
-                        "on_mission", "on_mission", "standby", "charging"][i]
-            r.task = tasks[i]
+            r.status = ["on_mission", "standby", "on_mission", "standby",
+                        "standby", "standby", "standby", "charging"][i]
+            r.mission = "patrol" if i in (0, 2) else "idle"
+            r.task = "林区巡逻" if r.mission == "patrol" else "基地待命"
             r.altitude = 80 + i * 6 if kind == "UAV" else 0
             r.speed = 4.2 if kind == "UAV" else 1.1
             r.history = [self.rng.uniform(0.6, 1.0) * v for v in (0.8, 0.9, 1.0, 0.95, 1.05, 1.0)]
@@ -458,8 +467,14 @@ class SimEngine(QObject):
         self.wind_speed = round(max(1.2, min(9.5, self.wind_speed + self.rng.uniform(-0.18, 0.2))), 1)
         self.wind_deg = (self.wind_deg + self.rng.uniform(-1.6, 1.6)) % 360
 
+        # 自动随机时间生成火点（支持多火点）
+        self._next_fire_in -= 1
+        if self._next_fire_in <= 0 and len([x for x in self.fires if x.state != "extinguished"]) < 3:
+            self._next_fire_in = self.rng.randint(18, 32)
+            self.ignite_random_fire(auto_notify=True)
+
         # 推进机器人移动与灭火作业
-        active_suppression = 0.0
+        suppression_by_fire: dict[str, float] = {}
         for r in self.robots:
             if r.status == "offline":
                 continue
@@ -472,79 +487,73 @@ class SimEngine(QObject):
                 r.battery = min(100.0, r.battery + 0.45)
                 r.water_l = min(r.water_cap, r.water_l + 6.0)
             self._advance_robot(r)
-            if r.spraying and not self.estop and self.fire.state != "extinguished":
-                active_suppression += r.suppression_power
+            if r.spraying and not self.estop:
+                fid = r.assigned_fire_id or self.fire.id
+                suppression_by_fire[fid] = suppression_by_fire.get(fid, 0.0) + r.suppression_power
                 used = min(r.water_l, 1.8 if r.kind == "UGV" else 0.6)
                 r.water_l = max(0.0, r.water_l - used)
                 r.payload = round(100.0 * r.water_l / max(1.0, r.water_cap), 1)
-                self.fire.water_used_l += used
+                for f_item in self.fires:
+                    if f_item.id == fid:
+                        f_item.water_used_l += used
 
-        # 火势蔓延与扑救对抗算法
-        f = self.fire
-        if not self.estop and f.state != "extinguished":
+        # 多火点蔓延与扑救对抗算法
+        active_fires = [f for f in self.fires if f.state != "extinguished"]
+        for f in active_fires:
+            if self.estop:
+                continue
             wind_factor = 0.25 + (self.wind_speed / 10.0) * 0.45
             humidity_factor = max(0.3, 1.2 - self.humidity / 100.0)
-            spread = wind_factor * humidity_factor * 0.55
+            spread = wind_factor * humidity_factor * 0.50
+            sup = suppression_by_fire.get(f.id, 0.0)
             f.spread_rate = round(spread, 2)
-            f.suppression_rate = round(active_suppression, 2)
-            net = spread - active_suppression
+            f.suppression_rate = round(sup, 2)
+            net = spread - sup
             f.intensity = max(0.0, min(100.0, f.intensity + net))
             f.peak_intensity = max(f.peak_intensity, f.intensity)
-
             if net > 0:
-                f.area = round(f.area + net * 0.14, 2)
+                f.area = round(f.area + net * 0.12, 2)
                 f.peak_area = max(f.peak_area, f.area)
-                f.state = "spreading"
+                if f.state != "suspicious":
+                    f.state = "spreading"
             elif f.intensity > 0:
                 f.area = round(max(0.2, f.area + net * 0.08), 2)
                 f.state = "contained" if f.intensity < 30 else "suppressing"
 
             f.containment = round(max(5.0, min(100.0, 100.0 - f.intensity * 0.92)), 1)
-            self.fire_area = f.area
-            self.containment = f.containment
             f.history = (f.history + [f.intensity])[-30:]
             f.area_history = (f.area_history + [f.area])[-30:]
 
-            # 里程碑通知
-            for pct in (50, 80):
-                if f.containment >= pct and pct not in self._milestones:
-                    self._milestones.add(pct)
-                    self.push_alert(
-                        f"火点 {f.id} 控制率突破 {pct}%",
-                        f"当前火势强度 {f.intensity:.0f}%，压制速率 {active_suppression:.1f}/s",
-                        "info", "灭火态势",
-                    )
-
-            # 扑灭判定
             if f.intensity <= 0.0:
                 f.intensity = 0.0
                 f.containment = 100.0
                 f.state = "extinguished"
-                self.containment = 100.0
                 duration = max(1, int(self.sim_time - f.ignited_at))
-                self.last_report = {
-                    "id": f.id,
-                    "duration_s": duration,
-                    "peak_area": round(f.peak_area, 2),
-                    "water_used_l": round(f.water_used_l, 1),
-                    "robots": [d["robot_id"] for d in self.dispatch_plan],
-                }
                 self.fire_history.append(f)
                 self.push_alert(
                     f"火点 {f.id} 已完全扑灭！",
                     f"耗时 {duration}s · 峰值过火 {f.peak_area:.1f} ha · 耗水 {f.water_used_l:.0f} L",
                     "success", "灭火捷报",
                 )
-                self.push_event(f"火点 {f.id} 明火已扑灭，编队转入返航/巡检待命", "success")
+                self.push_event(f"火点 {f.id} 明火已扑灭，相关装备自动返回就近空闲基地", "success")
                 for r in self.robots:
-                    if r.mission in ("en_route", "spraying"):
+                    if r.assigned_fire_id == f.id:
                         r.spraying = False
-                        r.mission = "returning"
-                        r.status = "returning"
-                        r.task = "扑灭返航"
+                        r.assigned_fire_id = ""
+                        self._assign_nearest_base(r)
 
-        fire_risk_boost = (self.fire.intensity / 100.0) * 28.0 if self.fire.state != "extinguished" else -18.0
-        target_risk = 40 + (self.temperature - 20) * 2.0 - (self.humidity - 20) * 0.7 + self.wind_speed * 1.8 + fire_risk_boost
+        still_active = [f for f in self.fires if f.state != "extinguished"]
+        if still_active:
+            self.fire = still_active[0]
+            self.fire_origin = self.fire.origin
+            self.fire_area = round(sum(f.area for f in still_active), 1)
+            self.containment = round(sum(f.containment for f in still_active) / len(still_active), 1)
+        else:
+            self.fire_area = 0.0
+            self.containment = 100.0
+
+        fire_risk_boost = (self.fire.intensity / 100.0) * 28.0 if still_active else -18.0
+        target_risk = 32 + (self.temperature - 20) * 1.8 - (self.humidity - 20) * 0.6 + self.wind_speed * 1.6 + fire_risk_boost
         self.risk = round(max(10.0, min(99.0, self.risk + (target_risk - self.risk) * 0.14)), 1)
 
         self.temp_history = (self.temp_history + [self.temperature])[-16:]
@@ -572,8 +581,29 @@ class SimEngine(QObject):
                 continue
             self.push_alert(title, detail, level, "阈值监测")
 
+    def _assign_nearest_base(self, r: Robot):
+        """选择最近且未被其他装备占用的基地返航充电。"""
+        occupied = {(round(o.home_x, 2), round(o.home_y, 2)) for o in self.robots if o.id != r.id and o.status in ("standby", "charging")}
+        free_bases = [b for b in BASES if (round(b[2], 2), round(b[3], 2)) not in occupied]
+        pool = free_bases if free_bases else BASES
+        best = min(pool, key=lambda b: math.hypot(r.x - b[2], r.y - b[3]))
+        r.home_x, r.home_y = best[2], best[3]
+        r.mission = "returning"
+        r.status = "returning"
+        r.task = f"返回{best[1]}"
+
     def _advance_robot(self, r: Robot):
         if self.estop or r.status not in ("on_mission", "returning"):
+            return
+        if r.mission == "patrol":
+            ang = self.sim_time * (0.06 if r.kind == "UAV" else 0.03) + hash(r.id) % 7
+            cx, cy = 0.48 + 0.24 * math.cos(ang), 0.48 + 0.20 * math.sin(ang)
+            dx, dy = cx - r.x, cy - r.y
+            dist = max(0.001, math.hypot(dx, dy))
+            step = 0.014 if r.kind == "UAV" else 0.008
+            r.heading = math.atan2(dy, dx)
+            r.x = min(0.92, max(0.06, r.x + (dx / dist) * min(step, dist)))
+            r.y = min(0.92, max(0.06, r.y + (dy / dist) * min(step, dist)))
             return
         if r.mission == "recon":
             tx, ty = r.target_x, r.target_y
@@ -608,10 +638,14 @@ class SimEngine(QObject):
                 r.y = min(0.94, max(0.04, r.y + (dy / dist) * step))
                 r.arrived = False
                 r.spraying = False
+                r.eta_seconds = round(dist / max(0.005, step), 1)
+                r.eta_status = "早到" if r.eta_seconds < 8 else ("准时" if r.eta_seconds < 18 else "晚到")
             else:
                 r.arrived = True
                 r.mission = "spraying"
-                r.spraying = self.fire.state != "extinguished"
+                r.eta_seconds = 0.0
+                r.eta_status = "已到达"
+                r.spraying = True
                 # 到达火线后小幅环绕/微调位置
                 r.heading = math.atan2(self.fire_origin[1] - r.y, self.fire_origin[0] - r.x)
         elif r.mission == "returning":
@@ -731,24 +765,25 @@ class SimEngine(QObject):
                 r.task = p["task"]
                 r.target_x = p["tx"]
                 r.target_y = p["ty"]
+                r.assigned_fire_id = self.fire.id
                 r.arrived = False
         self.dispatch_plan = chosen
         if chosen:
             names = "、".join(p["robot_id"] for p in chosen)
             self.push_event(f"指挥员已确认调度：{names} 前往扑救火点 {self.fire.id}", "success")
         return chosen
-    def ignite_random_fire(self, origin: tuple[float, float] | None = None) -> FireIncident:
-        """随机生成新火点，触发告警并由系统自主决策调度空地协同编队。"""
+    def ignite_random_fire(self, origin: tuple[float, float] | None = None, auto_notify: bool = False) -> FireIncident:
+        """随机生成新火点（支持多火点），触发告警并通知指挥员确认调度。"""
         if origin is None:
-            ox = round(self.rng.uniform(0.28, 0.82), 3)
-            oy = round(self.rng.uniform(0.26, 0.78), 3)
+            ox = round(self.rng.uniform(0.24, 0.80), 3)
+            oy = round(self.rng.uniform(0.24, 0.76), 3)
             origin = (ox, oy)
         self.fire_counter += 1
         fid = f"A-{self.fire_counter:02d}"
-        intensity = round(self.rng.uniform(62.0, 88.0), 1)
-        area = round(self.rng.uniform(6.5, 15.0), 1)
+        intensity = round(self.rng.uniform(58.0, 86.0), 1)
+        area = round(self.rng.uniform(5.5, 13.0), 1)
         self.fire_origin = origin
-        self.fire = FireIncident(
+        new_fire = FireIncident(
             id=fid,
             origin=origin,
             intensity=intensity,
@@ -761,19 +796,23 @@ class SimEngine(QObject):
             history=[intensity],
             area_history=[area],
         )
-        self.fire_area = area
+        self.fires.append(new_fire)
+        self.fire = new_fire
+        self.fire_area = round(sum(f.area for f in self.fires if f.state != "extinguished"), 1)
         self.containment = 10.0
         self._milestones.clear()
         self.last_report = None
         self.replan()
+        self.recommend_dispatch()
         self.push_alert(
             f"发现新火点 {fid}！",
             f"热成像定位 ({origin[0]:.2f}, {origin[1]:.2f}) · 初始强度 {intensity:.0f}% · 面积 {area:.1f} ha",
             "critical", "火灾预警系统",
         )
-        self.push_event(f"火点 {fid} 触发一级响应，系统正在自主评估并指派空地编队…", "warning")
-        self.evaluate_and_dispatch()
-        return self.fire
+        self.push_event(f"火点 {fid} 触发警报，已生成推荐调度方案，等待指挥员确认…", "warning")
+        if auto_notify:
+            self.fire_appeared.emit(new_fire)
+        return new_fire
 
     def evaluate_and_dispatch(self) -> list[dict]:
         """基于多维评判标准（能力匹配 40% + 距离 25% + 电量 20% + 载荷 15%）自主指派协同编队。"""

@@ -22,7 +22,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from . import icons, theme
-from .simulation import FireSpreadModel, SimEngine
+from .simulation import BASES, FireSpreadModel, SimEngine
 
 C = QColor
 
@@ -294,8 +294,9 @@ class TerrainMap(QWidget):
         clip.addRoundedRect(r, 16, 16)
         p.setClipPath(clip)
 
-        if self.show_heat:
+        if self.show_heat and any(f.state != "extinguished" for f in self.engine.fires):
             self._paint_heat(p, r)
+        self._paint_bases(p, r)
         self._paint_fire(p, r)
         if self.show_costmap:
             self._paint_costmap(p, r)
@@ -359,60 +360,68 @@ class TerrainMap(QWidget):
         p.drawText(box, Qt.AlignmentFlag.AlignCenter, "建议隔离带")
         p.setPen(Qt.PenStyle.NoPen)
 
-    def _paint_fire(self, p: QPainter, r: QRectF):
-        center = self.pt(self.engine.fire_origin)
-        f = self.engine.fire
-        if f.state == "extinguished" or f.intensity <= 0.1:
-            # 已扑灭状态：绿色安全脉冲 + 标牌
-            p.setPen(QPen(C(theme.ACCENT), 2))
-            p.setBrush(QColor(18, 166, 106, 40))
-            p.drawEllipse(center, 18, 18)
+    def _paint_bases(self, p: QPainter, r: QRectF):
+        for _bid, bname, bx, by in BASES:
+            pt = self.pt((bx, by))
+            p.setPen(QPen(C(theme.ACCENT_DARK), 1.5))
+            p.setBrush(QColor(255, 255, 255, 225))
+            p.drawRoundedRect(QRectF(pt.x() - 8, pt.y() - 8, 16, 16), 4, 4)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(C(theme.ACCENT))
-            p.drawEllipse(center, 6, 6)
-            p.setFont(_font(9.5, 700))
+            p.drawEllipse(pt, 3.5, 3.5)
+            p.setFont(_font(8, 700))
             p.setPen(C(theme.ACCENT_DARK))
-            p.drawText(QPointF(center.x() + 12, center.y() - 6), f"火点 {f.id} · 已扑灭 ✓")
+            p.drawText(QPointF(pt.x() + 11, pt.y() + 4), bname)
+
+    def _paint_fire(self, p: QPainter, r: QRectF):
+        fires = self.engine.fires
+        if not fires:
             return
+        for f in fires:
+            center = self.pt(f.origin)
+            if f.state == "extinguished" or f.intensity <= 0.1:
+                p.setPen(QPen(C(theme.ACCENT), 2))
+                p.setBrush(QColor(18, 166, 106, 40))
+                p.drawEllipse(center, 16, 16)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(C(theme.ACCENT))
+                p.drawEllipse(center, 5, 5)
+                p.setFont(_font(9, 700))
+                p.setPen(C(theme.ACCENT_DARK))
+                p.drawText(QPointF(center.x() + 11, center.y() - 5), f"{f.id} 已扑灭 ✓")
+                continue
 
-        scale = 0.45 + 0.65 * (f.intensity / 100.0)
-        pulse = (1 + 0.08 * math.sin(self.phase * 2.2)) * scale
-        rad = QRectF(center.x() - 46 * pulse, center.y() - 46 * pulse, 92 * pulse, 92 * pulse)
-        grad = QRadialGradient(center, 52 * pulse)
-        grad.setColorAt(0.0, QColor(255, 120, 60, 230))
-        grad.setColorAt(0.35, QColor(255, 175, 60, 150))
-        grad.setColorAt(0.7, QColor(255, 210, 120, 60))
-        grad.setColorAt(1.0, QColor(255, 220, 150, 0))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(grad)
-        p.drawEllipse(rad)
+            scale = 0.45 + 0.65 * (f.intensity / 100.0)
+            pulse = (1 + 0.08 * math.sin(self.phase * 2.2)) * scale
+            rad = QRectF(center.x() - 46 * pulse, center.y() - 46 * pulse, 92 * pulse, 92 * pulse)
+            grad = QRadialGradient(center, 52 * pulse)
+            grad.setColorAt(0.0, QColor(255, 120, 60, 230))
+            grad.setColorAt(0.35, QColor(255, 175, 60, 150))
+            grad.setColorAt(0.7, QColor(255, 210, 120, 60))
+            grad.setColorAt(1.0, QColor(255, 220, 150, 0))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(grad)
+            p.drawEllipse(rad)
 
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(C(theme.RED))
-        p.drawEllipse(center, 5.5, 5.5)
-        p.setBrush(QColor(255, 255, 255, 230))
-        p.drawEllipse(center, 2.2, 2.2)
+            p.setBrush(C(theme.AMBER if f.state == "suspicious" else theme.RED))
+            p.drawEllipse(center, 5.5, 5.5)
+            p.setBrush(QColor(255, 255, 255, 230))
+            p.drawEllipse(center, 2.2, 2.2)
 
-        # 烟雾粒子
-        smoke_count = max(1, int(5 * (f.intensity / 100.0)))
-        for i in range(smoke_count):
-            t = (self.phase * 0.6 + i * 0.21) % 1.0
-            alpha = int(120 * (1 - t) * (f.intensity / 100.0))
-            p.setBrush(QColor(120, 130, 126, alpha))
-            px = center.x() + math.sin(t * 6 + i) * (12 + 26 * t) - t * 8
-            py = center.y() - 6 - 52 * t
-            rad_s = (7 + 12 * t) * scale
-            p.drawEllipse(QPointF(px, py), rad_s, rad_s)
+            smoke_count = max(1, int(5 * (f.intensity / 100.0)))
+            for i in range(smoke_count):
+                t = (self.phase * 0.6 + i * 0.21) % 1.0
+                alpha = int(120 * (1 - t) * (f.intensity / 100.0))
+                p.setBrush(QColor(120, 130, 126, alpha))
+                px = center.x() + math.sin(t * 6 + i) * (12 + 26 * t) - t * 8
+                py = center.y() - 6 - 52 * t
+                rad_s = (7 + 12 * t) * scale
+                p.drawEllipse(QPointF(px, py), rad_s, rad_s)
 
-        if self._highlight > 0:
-            rad_h = 30 + (3.2 - self._highlight) * 34
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.setPen(QPen(QColor(229, 72, 77, int(190 * self._highlight / 3.2)), 2))
-            p.drawEllipse(center, rad_h, rad_h)
-
-        p.setFont(_font(9, 700))
-        p.setPen(C(theme.RED))
-        p.drawText(QPointF(center.x() + 12, center.y() - 10), f"火点 {f.id} ({f.intensity:.0f}%)")
+            p.setFont(_font(9, 700))
+            p.setPen(C(theme.AMBER if f.state == "suspicious" else theme.RED))
+            tag = f"可疑 {f.id}" if f.state == "suspicious" else f"火点 {f.id} ({f.intensity:.0f}%)"
+            p.drawText(QPointF(center.x() + 12, center.y() - 10), tag)
 
     def _paint_costmap(self, p: QPainter, r: QRectF):
         center = self.pt(self.engine.fire_origin)
@@ -476,11 +485,7 @@ class TerrainMap(QWidget):
         p.drawLine(end + QPointF(0, -13), end + QPointF(0, -5))
         p.drawLine(end + QPointF(0, 5), end + QPointF(0, 13))
 
-        # 沿路径运动的机器人
-        if self.mode == "navigation" and self.engine.plan.path:
-            idx = int((self.phase * 3.2) % (len(path_pts) - 1))
-            pos = path_pts[idx]
-            self._draw_badge(p, pos, "robot", theme.ACCENT, "UGV-01", highlight=True)
+        # 沿路径运动的机器人（已移除假循环动画，由 SimEngine 实时驱动）
 
     def _paint_lidar(self, p: QPainter, r: QRectF):
         robot = next((x for x in self.engine.robots if x.id == "UGV-01"), self.engine.robots[0])
@@ -517,7 +522,8 @@ class TerrainMap(QWidget):
             if self.mode == "navigation" and robot.kind == "UGV":
                 continue
             pos = self.pt((robot.x, robot.y))
-            color = theme.BLUE if robot.kind == "UAV" else theme.ACCENT
+            is_dispatched = robot.mission in ("en_route", "spraying", "recon")
+            color = "#F59E0B" if is_dispatched else (theme.BLUE if robot.kind == "UAV" else theme.ACCENT)
 
             # 赶赴火点虚线轨迹
             if robot.mission == "en_route":
@@ -593,7 +599,13 @@ class TerrainMap(QWidget):
                    Qt.AlignmentFlag.AlignCenter, label)
 
     def _paint_legend(self, p: QPainter, r: QRectF):
-        items = [(theme.RED, "火点"), (theme.BLUE, "无人机"), (theme.ACCENT, "地面机器人")]
+        items = [
+            (theme.RED, "火点"),
+            (theme.BLUE, "无人机"),
+            (theme.ACCENT, "地面机器人"),
+            ("#F59E0B", "已调度"),
+            (theme.ACCENT_DARK, "基地"),
+        ]
         if self.show_heat:
             items.append((theme.AMBER, "蔓延概率"))
         x = r.left() + 15
