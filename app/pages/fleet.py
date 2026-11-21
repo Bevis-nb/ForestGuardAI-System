@@ -318,10 +318,6 @@ class RemoteControlDialog(QDialog):
         else:
             left.addWidget(self.feed, 1)
 
-        hint = QLabel(f"视频路径：assets/videos/firefighting_demo.mp4（放入视频后自动循环播放；当前使用实时视角兜底）")
-        hint.setStyleSheet("color:#7C8F87; font-size:10.5px; background:transparent;")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        left.addWidget(hint)
         content.addLayout(left, 1)
 
         # 右：控制列
