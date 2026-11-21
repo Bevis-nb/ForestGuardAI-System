@@ -29,7 +29,7 @@ class AnalysisPage(ScrollPage):
         )
         self.add_action(Pill("多模态推理在线", "success"))
         self.add_action(button("导出研判报告", "soft", "download", height=34, on_click=self._export))
-        self.add_action(button("生成处置方案", "primary", "sparkles", height=34, on_click=self._make_plan))
+        # 处置方案随火点态势自动生成
 
         body = QHBoxLayout()
         body.setSpacing(14)
@@ -158,9 +158,7 @@ class AnalysisPage(ScrollPage):
         self.steps = QVBoxLayout()
         self.steps.setSpacing(5)
         decision.addLayout(self.steps)
-        self.apply_btn = button("确认并下发处置方案", "primary", "send", height=40,
-                                on_click=self._confirm)
-        decision.addWidget(self.apply_btn)
+        decision.addWidget(Pill("方案已随火情自动生成并生效", "success"))
         body.addWidget(decision, 2)
 
         self.root.addLayout(body, 1)
@@ -251,8 +249,7 @@ class AnalysisPage(ScrollPage):
         toast(self, "已根据最新态势重新生成处置方案")
 
     def _confirm(self):
-        self.apply_btn.setText("方案已下发")
-        self.apply_btn.setEnabled(False)
+        # 方案已自动生效
         self.engine.push_event("指挥员确认处置方案，任务已下发至 8 台装备", "success")
         self.engine.push_alert("处置方案已下发", "3 组力量进入预定位置，10 分钟内完成展开", "info", "指挥终端")
         toast(self, "处置方案已下发，各编队开始执行")

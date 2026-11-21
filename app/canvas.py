@@ -55,6 +55,7 @@ class TerrainMap(QWidget):
 
     clicked_map = Signal(float, float)
     hovered = Signal(str)
+    robot_selected = Signal(str)
 
     def __init__(self, engine: SimEngine, mode: str = "overview", parent=None,
                  show_legend: bool = True):
@@ -65,7 +66,7 @@ class TerrainMap(QWidget):
         self.show_costmap = mode == "navigation"
         self.show_heat = mode == "analysis"
         self.show_legend = show_legend
-        self.show_path = mode != "overview"
+        self.show_path = mode == "navigation"
         self.fire_frame = 0
         self.phase = 0.0
         self.minutes = 30
@@ -99,7 +100,7 @@ class TerrainMap(QWidget):
         self.show_lidar = mode == "navigation"
         self.show_costmap = mode == "navigation"
         self.show_heat = mode == "analysis"
-        self.show_path = mode != "overview"
+        self.show_path = mode == "navigation"
         self.update()
 
     def set_minutes(self, minutes: int):
@@ -298,13 +299,9 @@ class TerrainMap(QWidget):
             self._paint_heat(p, r)
         self._paint_bases(p, r)
         self._paint_fire(p, r)
-        if self.show_costmap:
-            self._paint_costmap(p, r)
         if self.show_path:
             self._paint_path(p, r)
         self._paint_robots(p, r)
-        if self.show_lidar:
-            self._paint_lidar(p, r)
         p.restore()
         self._paint_compass(p, r)
         if self.show_legend:
@@ -335,30 +332,33 @@ class TerrainMap(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         p.drawImage(r, img)
 
-        # 隔离带示意
-        iso = QPainterPath(QPointF(r.left() + r.width() * 0.60, r.top() + r.height() * 0.30))
-        iso.cubicTo(
-            r.left() + r.width() * 0.68, r.top() + r.height() * 0.42,
-            r.left() + r.width() * 0.66, r.top() + r.height() * 0.62,
-            r.left() + r.width() * 0.74, r.top() + r.height() * 0.78,
-        )
-        p.setPen(QPen(C("#FFFFFF"), 6))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(iso)
-        pen = QPen(C(theme.AMBER), 3)
-        pen.setStyle(Qt.PenStyle.DashLine)
-        pen.setDashPattern([4, 4])
-        p.setPen(pen)
-        p.drawPath(iso)
-        p.setFont(_font(9, 700))
-        tw = p.fontMetrics().horizontalAdvance("建议隔离带") + 16
-        box = QRectF(r.left() + r.width() * 0.705, r.top() + r.height() * 0.815, tw, 19)
+        # 每个活跃火点各自生成一条下风向建议隔离带
+        fires = [f for f in getattr(self.engine, "fires", []) if not f.extinguished]
+        if not fires and hasattr(self.engine, "fire"):
+            fires = [self.engine.fire]
+        for f in fires:
+            fx, fy = f.origin
+            rad = math.radians(self.engine.wind_deg)
+            dx, dy = math.cos(rad) * 0.08, math.sin(rad) * 0.08
+            px, py = -math.sin(rad) * 0.10, math.cos(rad) * 0.10
+            p1 = QPointF(r.left() + r.width() * (fx + dx - px), r.top() + r.height() * (fy + dy - py))
+            p2 = QPointF(r.left() + r.width() * (fx + dx * 1.2), r.top() + r.height() * (fy + dy * 1.2))
+            p3 = QPointF(r.left() + r.width() * (fx + dx + px), r.top() + r.height() * (fy + dy + py))
+            iso = QPainterPath(p1)
+            iso.quadTo(p2, p3)
+            p.setPen(QPen(C("#FFFFFF"), 6))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(iso)
+            pen = QPen(C(theme.AMBER), 3)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            pen.setDashPattern([4, 4])
+            p.setPen(pen)
+            p.drawPath(iso)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, 230))
-        p.drawRoundedRect(box, 9, 9)
-        p.setPen(C(theme.AMBER))
-        p.drawText(box, Qt.AlignmentFlag.AlignCenter, "建议隔离带")
-        p.setPen(Qt.PenStyle.NoPen)
+
+    def highlight_fire(self):
+        self._highlight = 3.2
+        self.update()
 
     def _paint_bases(self, p: QPainter, r: QRectF):
         for _bid, bname, bx, by in BASES:
@@ -551,24 +551,39 @@ class TerrainMap(QWidget):
                     p.setBrush(QColor(56, 189, 248, int(220 * (1 - t * 0.5))))
                     p.drawEllipse(QPointF(sx, sy), 3.2, 3.2)
 
+            is_docked = robot.mission == "idle" and robot.status in ("standby", "charging")
+            if is_docked:
+                # 在基地内以 2x4 小圆点网格排列，确保 8 台装备全部可见且不重叠
+                docked_list = [
+                    rb.id for rb in self.engine.robots
+                    if rb.mission == "idle" and rb.status in ("standby", "charging")
+                    and abs(rb.x - robot.x) < 0.08 and abs(rb.y - robot.y) < 0.08
+                ]
+                idx = docked_list.index(robot.id) if robot.id in docked_list else 0
+                col, row = idx % 4, idx // 4
+                pos = QPointF(pos.x() + (col - 1.5) * 11, pos.y() + (row - 0.5) * 11 - 14)
             self._draw_badge(p, pos, "drone" if robot.kind == "UAV" else "robot",
-                             color, robot.id,
-                             highlight=robot.id == self.selected_robot)
+                             color, "",
+                             highlight=robot.id == self.selected_robot,
+                             small=is_docked)
 
     def _draw_badge(self, p: QPainter, pos: QPointF, icon_name: str, color: str,
-                    text: str, highlight: bool = False):
-        radius = 13 if not highlight else 15
+                    text: str, highlight: bool = False, small: bool = False):
+        radius = (4.5 if small else 13) if not highlight else (6.5 if small else 15)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 235))
         p.drawEllipse(pos, radius, radius)
         p.setBrush(QColor(color))
         p.drawEllipse(pos, radius - 1.5, radius - 1.5)
-        pm = icons.pixmap(icon_name, "#FFFFFF", 14)
-        p.drawPixmap(QPointF(pos.x() - 7, pos.y() - 7), pm)
+        if not small:
+            pm = icons.pixmap(icon_name, "#FFFFFF", 14)
+            p.drawPixmap(QPointF(pos.x() - 7, pos.y() - 7), pm)
         if highlight:
             p.setPen(QPen(QColor(color), 2, Qt.PenStyle.DashLine))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(pos, radius + 7, radius + 7)
+        if not text:
+            return
         p.setFont(_font(8.5, 700))
         fm_w = 26
         p.setPen(C("#FFFFFF"))
@@ -630,7 +645,15 @@ class TerrainMap(QWidget):
     # ------------------------------------------------------------------
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self._content().contains(event.position()):
-            nx, ny = self.norm(event.position())
+            pos = event.position()
+            for r in self.engine.robots:
+                pt = self.pt((r.x, r.y))
+                if math.hypot(pos.x() - pt.x(), pos.y() - pt.y()) <= 20:
+                    self.selected_robot = r.id
+                    self.robot_selected.emit(r.id)
+                    self.update()
+                    break
+            nx, ny = self.norm(pos)
             self.clicked_map.emit(nx, ny)
         super().mousePressEvent(event)
 

@@ -253,6 +253,7 @@ class FireIncident:
     water_used_l: float = 0.0
     spread_rate: float = 0.0       # 每 tick 强度增量
     suppression_rate: float = 0.0  # 每 tick 强度削减
+    extinguished_at: float = -1.0
     history: list[float] = field(default_factory=list)
     area_history: list[float] = field(default_factory=list)
 
@@ -388,32 +389,29 @@ class SimEngine(QObject):
             ("UGV-03", "獾式三号", "UGV", "FG-R3 履带底盘"),
             ("UGV-04", "獾式四号", "UGV", "FG-R4 轮履两用"),
         ]
-        positions = [
-            (0.30, 0.30), (0.42, 0.24), (0.52, 0.36), (0.24, 0.52),
-            (0.22, 0.70), (0.32, 0.76), (0.42, 0.68), (0.50, 0.76),
-        ]
-        tasks = ["火线侦察", "热源定位", "空中中继", "通信中继",
-                 "地面扑打", "隔离带作业", "水带铺设", "洒水降温"]
+        base_prefixes = ["A", "B", "C", "D"]
         robots: list[Robot] = []
-        for i, (rid, name, kind, model) in enumerate(specs):
-            r = Robot(rid, name, kind, model)
-            r.x, r.y = positions[i]
-            r.home_x, r.home_y = positions[i]
-            r.battery = [86, 74, 63, 91, 68, 82, 57, 45][i]
-            r.signal = [96, 91, 88, 94, 89, 84, 92, 79][i]
-            r.payload = [40, 35, 20, 15, 78, 74, 66, 58][i]
-            r.water_cap = 35.0 if kind == "UAV" else 220.0
-            r.water_l = r.water_cap * (r.payload / 100.0)
-            r.suppression_power = 0.45 if kind == "UAV" else 1.25
-            r.temp = [24.5, 25.1, 24.9, 23.8, 41.2, 44.6, 39.8, 47.3][i]
-            r.status = ["on_mission", "standby", "on_mission", "standby",
-                        "standby", "standby", "standby", "charging"][i]
-            r.mission = "patrol" if i in (0, 2) else "idle"
-            r.task = "林区巡逻" if r.mission == "patrol" else "基地待命"
-            r.altitude = 80 + i * 6 if kind == "UAV" else 0
-            r.speed = 4.2 if kind == "UAV" else 1.1
-            r.history = [self.rng.uniform(0.6, 1.0) * v for v in (0.8, 0.9, 1.0, 0.95, 1.05, 1.0)]
-            robots.append(r)
+        for b_idx, (bid, bname, bx, by) in enumerate(BASES):
+            prefix = base_prefixes[b_idx]
+            for i, (rid, name, kind, model) in enumerate(specs):
+                full_id = f"{prefix}-{rid}"
+                r = Robot(full_id, f"{bname[:2]}·{name}", kind, model)
+                r.x, r.y = bx, by
+                r.home_x, r.home_y = bx, by
+                r.battery = [86, 74, 63, 91, 68, 82, 57, 45][i]
+                r.signal = [96, 91, 88, 94, 89, 84, 92, 79][i]
+                r.payload = [40, 35, 20, 15, 78, 74, 66, 58][i]
+                r.water_cap = 35.0 if kind == "UAV" else 220.0
+                r.water_l = r.water_cap * (r.payload / 100.0)
+                r.suppression_power = 0.45 if kind == "UAV" else 1.25
+                r.temp = 25.0
+                r.status = "on_mission" if (b_idx in (0, 2) and i == 0) else "standby"
+                r.mission = "patrol" if (b_idx in (0, 2) and i == 0) else "idle"
+                r.task = "全林区覆盖巡逻" if r.mission == "patrol" else f"{bname}待命"
+                r.altitude = 80 + i * 6 if kind == "UAV" else 0
+                r.speed = 4.2 if kind == "UAV" else 1.1
+                r.history = [25.0] * 6
+                robots.append(r)
         return robots
 
     def _make_alerts(self) -> list[dict]:
@@ -479,20 +477,49 @@ class SimEngine(QObject):
             self._next_fire_in = self.rng.randint(18, 32)
             self.ignite_random_fire(auto_notify=True)
 
+        # 保持固定 2 架健康无人机执行全林区覆盖巡逻（100s 全覆盖）
+        for r in self.robots:
+            if r.kind == "UAV" and r.mission == "patrol" and (r.temp > 45.0 or r.battery < 25.0):
+                self._assign_nearest_base(r)
+        patrol_uavs = [r for r in self.robots if r.kind == "UAV" and r.mission == "patrol"]
+        if len(patrol_uavs) < 2:
+            for r in self.robots:
+                if r.kind == "UAV" and r.mission == "idle" and r.status != "offline" and r.battery >= 25.0 and r.temp <= 45.0:
+                    r.mission = "patrol"
+                    r.status = "on_mission"
+                    r.task = "全林区覆盖巡逻"
+                    patrol_uavs.append(r)
+                    if len(patrol_uavs) >= 2:
+                        break
+
         # 推进机器人移动与灭火作业
         suppression_by_fire: dict[str, float] = {}
+        active_fires_now = [f for f in self.fires if f.state != "extinguished"]
         for r in self.robots:
             if r.status == "offline":
                 continue
+            near_fire = any(math.hypot(r.x - f.origin[0], r.y - f.origin[1]) < 0.14 for f in active_fires_now)
+            if near_fire and r.status == "on_mission":
+                r.temp = min(68.0, r.temp + self.rng.uniform(1.5, 2.8))
+            elif r.status in ("standby", "charging"):
+                r.temp = max(25.0, r.temp - 2.5)
+            else:
+                r.temp = max(25.0, r.temp - 1.2)
+
             if r.status == "on_mission":
                 r.battery = max(6.0, r.battery - self.rng.uniform(0.04, 0.12))
-                r.temp = max(20.0, min(58.0, r.temp + self.rng.uniform(-0.25, 0.3)))
                 r.speed = max(0.2, min(6.0, r.speed + self.rng.uniform(-0.15, 0.15)))
                 r.history = (r.history + [r.temp])[-14:]
             elif r.status == "charging":
                 r.battery = min(100.0, r.battery + 0.45)
                 r.water_l = min(r.water_cap, r.water_l + 6.0)
             self._advance_robot(r)
+            if r.spraying:
+                f_obj = next((f for f in self.fires if f.id == (r.assigned_fire_id or self.fire.id)), self.fire)
+                fx, fy = f_obj.origin
+                if r.mission != "spraying" or math.hypot(r.x - fx, r.y - fy) > 0.06:
+                    r.spraying = False
+                    r.mission = "en_route"
             if r.spraying and not self.estop:
                 fid = r.assigned_fire_id or self.fire.id
                 suppression_by_fire[fid] = suppression_by_fire.get(fid, 0.0) + r.suppression_power
@@ -534,6 +561,7 @@ class SimEngine(QObject):
                 f.intensity = 0.0
                 f.containment = 100.0
                 f.state = "extinguished"
+                f.extinguished_at = self.sim_time
                 duration = max(1, int(self.sim_time - f.ignited_at))
                 self.fire_history.append(f)
                 self.push_alert(
@@ -547,6 +575,12 @@ class SimEngine(QObject):
                         r.spraying = False
                         r.assigned_fire_id = ""
                         self._assign_nearest_base(r)
+
+        # 已扑灭火点 4 秒后从地图自动消失
+        self.fires = [
+            f for f in self.fires
+            if not (f.state == "extinguished" and f.extinguished_at >= 0 and self.sim_time - f.extinguished_at >= 4.0)
+        ]
 
         still_active = [f for f in self.fires if f.state != "extinguished"]
         if still_active:
@@ -588,22 +622,20 @@ class SimEngine(QObject):
             self.push_alert(title, detail, level, "阈值监测")
 
     def _assign_nearest_base(self, r: Robot):
-        """选择最近且未被其他装备占用的基地返航充电。"""
-        occupied = {(round(o.home_x, 2), round(o.home_y, 2)) for o in self.robots if o.id != r.id and o.status in ("standby", "charging")}
-        free_bases = [b for b in BASES if (round(b[2], 2), round(b[3], 2)) not in occupied]
-        pool = free_bases if free_bases else BASES
-        best = min(pool, key=lambda b: math.hypot(r.x - b[2], r.y - b[3]))
-        r.home_x, r.home_y = best[2], best[3]
+        """任务完成或需充电时，只返回该装备所属的固定基地。"""
+        bname = next((b[1] for b in BASES if abs(b[2] - r.home_x) < 0.05 and abs(b[3] - r.home_y) < 0.05), "所属基地")
         r.mission = "returning"
         r.status = "returning"
-        r.task = f"返回{best[1]}"
+        r.task = f"返回{bname}"
 
     def _advance_robot(self, r: Robot):
         if self.estop or r.status not in ("on_mission", "returning"):
             return
         if r.mission == "patrol":
-            ang = self.sim_time * (0.06 if r.kind == "UAV" else 0.03) + hash(r.id) % 7
-            cx, cy = 0.48 + 0.24 * math.cos(ang), 0.48 + 0.20 * math.sin(ang)
+            # 100 秒全林区覆盖巡逻航线（往复扫描）
+            t = ((self.sim_time + (0 if r.id.endswith("1") else 50)) % 100) / 100.0
+            cx = 0.10 + 0.80 * abs(2 * ((t * 5) % 1.0) - 1.0)
+            cy = 0.14 + 0.72 * t
             dx, dy = cx - r.x, cy - r.y
             dist = max(0.001, math.hypot(dx, dy))
             step = 0.014 if r.kind == "UAV" else 0.008
@@ -737,7 +769,9 @@ class SimEngine(QObject):
         if len(uavs) >= 2:
             selected.append((uavs[1], "recon", "空中洒水 · 压制火头", (fx + 0.05, fy - 0.05)))
         offsets = [(-0.06, 0.04), (0.06, 0.04), (0.0, 0.07)]
-        ugv_tasks = ["火线正面强攻", "东侧隔离带阻断", "南线洒水降温"]
+        h_dir = "东侧" if fx < 0.5 else "西侧"
+        v_dir = "南线" if fy < 0.5 else "北线"
+        ugv_tasks = ["火线正面强攻", f"{h_dir}隔离带阻断", f"{v_dir}洒水降温"]
         for idx, r in enumerate(ugvs[:3]):
             ox, oy = offsets[idx]
             selected.append((r, "suppress", ugv_tasks[idx], (fx + ox, fy + oy)))
@@ -758,10 +792,6 @@ class SimEngine(QObject):
         if not self.dispatch_plan:
             self.recommend_dispatch()
         chosen = [p for p in self.dispatch_plan if selected_ids is None or p["robot_id"] in selected_ids]
-        for r in self.robots:
-            if r.status not in ("offline", "charging"):
-                r.spraying = False
-                r.mission = "idle"
         id_map = {r.id: r for r in self.robots}
         for p in chosen:
             r = id_map.get(p["robot_id"])
@@ -856,7 +886,9 @@ class SimEngine(QObject):
         if len(uavs) >= 2:
             selected.append((uavs[1], "recon", "空中洒水 · 压制火头", (fx + 0.05, fy - 0.05)))
         offsets = [(-0.06, 0.04), (0.06, 0.04), (0.0, 0.07)]
-        ugv_tasks = ["火线正面强攻", "东侧隔离带阻断", "南线洒水降温"]
+        h_dir = "东侧" if fx < 0.5 else "西侧"
+        v_dir = "南线" if fy < 0.5 else "北线"
+        ugv_tasks = ["火线正面强攻", f"{h_dir}隔离带阻断", f"{v_dir}洒水降温"]
         for idx, r in enumerate(ugvs[:3]):
             ox, oy = offsets[idx]
             selected.append((r, "suppress", ugv_tasks[idx], (fx + ox, fy + oy)))
@@ -906,16 +938,21 @@ class SimEngine(QObject):
         self.alert_added.emit(al)
 
     def replan(self, wind_deg: float | None = None, wind_speed: float | None = None,
-               slope: float | None = None, algo: str = "RL-A*") -> PathPlan:
+               slope: float | None = None, algo: str = "RL-A*",
+               start: tuple[float, float] | None = None,
+               goal: tuple[float, float] | None = None) -> PathPlan:
         if wind_deg is not None:
             self.wind_deg = wind_deg
         if wind_speed is not None:
             self.wind_speed = wind_speed
         if slope is not None:
             self.slope = slope
-        self.plan = self.planner.plan((0.16, 0.78), (0.52, 0.62), self.wind_deg,
+        fx, fy = self.fire_origin
+        st = start or (0.16, 0.78)
+        gl = goal or (round(max(0.08, fx - 0.06), 3), round(min(0.88, fy + 0.05), 3))
+        self.plan = self.planner.plan(st, gl, self.wind_deg,
                                       self.wind_speed, self.slope, self.fire_origin, algo)
-        self.baseline = self.planner.plan((0.16, 0.78), (0.52, 0.62), self.wind_deg,
+        self.baseline = self.planner.plan(st, gl, self.wind_deg,
                                           self.wind_speed, self.slope, self.fire_origin, algo="A*")
         return self.plan
 

@@ -41,7 +41,7 @@ class CollaborationPage(ScrollPage):
         )
         self.add_action(Pill("MAS 协作在线", "success"))
         self.add_action(button("自动分配", "soft", "sparkles", height=34, on_click=self._auto_allocate))
-        self.add_action(button("发起拍卖", "primary", "users", height=34, on_click=self._auction))
+        # 已移除发起拍卖按钮
 
         self._build_stats()
 

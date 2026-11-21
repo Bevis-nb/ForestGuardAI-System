@@ -38,8 +38,7 @@ class NavPage(ScrollPage):
         self.slam_pill = self.add_action(Pill("SLAM 建图中 87%", "success"))
         self.add_action(button("重新建图", "soft", "refresh", height=34,
                                on_click=self._restart_slam))
-        self.add_action(button("生成最优路径", "primary", "route", height=34,
-                               on_click=self._replan))
+        # 路径随选中装备与参数实时规划
 
         body = QHBoxLayout()
         body.setSpacing(14)
@@ -52,17 +51,17 @@ class NavPage(ScrollPage):
         map_panel.add_action(kv_chip("cpu", "关键帧 1,284"))
         self.map = TerrainMap(engine, "navigation")
         self.map.setMinimumHeight(372)
+        self.map.show_path = False
+        self._selected_robot_id = None
+        self.map.robot_selected.connect(self._on_robot_selected)
         map_panel.add(self.map, 1)
+        self.robot_info_label = label("点击地图上的设备查看单体状态与规划路径", "caption", color=theme.TEXT_SOFT)
+        map_panel.add(self.robot_info_label)
 
         ctrl = QHBoxLayout()
         ctrl.setSpacing(9)
         ctrl.addWidget(label("图层", "muted"))
-        self.sw_lidar = ToggleSwitch(True)
-        ctrl.addWidget(self.sw_lidar)
-        ctrl.addWidget(label("激光点云", "caption"))
-        self.sw_cost = ToggleSwitch(True)
-        ctrl.addWidget(self.sw_cost)
-        ctrl.addWidget(label("代价地图", "caption"))
+        # 已移除激光点云与代价地图图层开关
         ctrl.addStretch(1)
         self.nav_state = label("● 自主导航中 · 动态避障已开启", None,
                                color=theme.ACCENT, size=11.5, weight=700)
@@ -158,8 +157,7 @@ class NavPage(ScrollPage):
 
         self.root.addLayout(body, 1)
 
-        self.sw_lidar.toggled.connect(self.map.set_lidar_visible)
-        self.sw_cost.toggled.connect(self.map.set_costmap_visible)
+        # 已移除激光点云与代价地图开关
         self.temp_spin.valueChanged.connect(self._on_threshold)
         self._build_comparison()
         self._update_slider_labels()
@@ -192,7 +190,7 @@ class NavPage(ScrollPage):
         self._update_slider_labels()
         if hasattr(self, "gain_pill"):
             self.gain_pill.set_kind("info")
-            self.gain_pill.set_text("参数已修改，点击「生成最优路径」")
+            self.gain_pill.set_text("参数已实时更新")
 
     def _update_slider_labels(self):
         if not hasattr(self, "slider_风向"):
@@ -246,7 +244,20 @@ class NavPage(ScrollPage):
         wspeed = self.slider_风速.value() / 10
         slope = self.slider_地形坡度.value() / 100
         algo = ["RL-A*", "A*", "Dijkstra", "RRT*"][self.algo.currentIndex()]
-        plan = self.engine.replan(wind_deg, wspeed, slope, algo)
+        r = next((x for x in self.engine.robots if x.id == self._selected_robot_id), self.engine.robots[0])
+        start = (r.x, r.y)
+        if r.mission == "returning":
+            goal = (r.home_x, r.home_y)
+        elif r.mission == "patrol":
+            t = ((self.engine.sim_time + (0 if r.id.endswith("1") else 50)) % 100) / 100.0
+            cx = 0.10 + 0.80 * abs(2 * ((t * 5) % 1.0) - 1.0)
+            cy = 0.14 + 0.72 * t
+            goal = (cx, cy)
+        elif r.mission in ("en_route", "spraying", "recon"):
+            goal = (r.target_x, r.target_y)
+        else:
+            goal = (r.home_x, r.home_y)
+        plan = self.engine.replan(wind_deg, wspeed, slope, algo, start=start, goal=goal)
         risk_drop = (self.engine.baseline.risk - plan.risk) * 100
         self._build_comparison()
         if risk_drop > 0.4:
@@ -295,7 +306,22 @@ class NavPage(ScrollPage):
     def _on_threshold(self, value: int):
         self.safe_log.setText(f"最近事件：温度阈值调整为 {value} ℃，超限将自动刹停并请求指挥确认")
 
+    def _on_robot_selected(self, rid: str):
+        self._selected_robot_id = rid
+        self.map.show_path = True
+        self._refresh()
+        self._replan()
+
     def _refresh(self):
+        if not self._selected_robot_id:
+            self.robot_info_label.setText("点击地图上的设备查看单体状态与规划路径")
+            return
+        r = next((x for x in self.engine.robots if x.id == self._selected_robot_id), self.engine.robots[0])
+        eta = f"ETA {r.eta_seconds:.0f}s ({r.eta_status})" if r.mission == "en_route" else r.task
+        self.robot_info_label.setText(
+            f"选中装备 {r.id} ({r.name}) · 电量 {r.battery:.0f}% · 机身温度 {r.temp:.1f}℃ · "
+            f"速度 {r.speed:.1f} m/s · 高度 {r.altitude:.0f} m · {eta}"
+        )
         e = self.engine
         self.t_speed.set_text("速度 1.8 m/s" if not e.estop else "速度 0.0 m/s（急停）")
         self.t_head.set_text(f"航向 {(e.wind_deg + 174) % 360:03.0f}°")
