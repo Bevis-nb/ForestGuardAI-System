@@ -5,7 +5,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from app.pages.analysis import AnalysisPage
 from app.simulation import SimEngine
@@ -109,6 +109,35 @@ class FireAnalysisTests(unittest.TestCase):
             row = self.page.findChild(QWidget, "force_" + robot.id)
             self.assertIsNotNone(row)
             self.assertTrue(row.isVisible())
+
+    def test_force_strip_count_and_repeated_updates(self):
+        fire = self.engine.ignite_random_fire((0.4, 0.4))
+        self.page._select_fire(fire.id)
+        self.app.processEvents()
+        assigned = [r for r in self.engine.robots if r.assigned_fire_id == fire.id]
+        self.assertEqual(self.page.force_count.text(), f"{len(assigned)} 台")
+        self.assertEqual(self.page.force_rows.count(), len(assigned))
+        self.assertTrue(self.page.force_strip.isVisible())
+        robot = assigned[0]
+        for battery in (70, 55, 30):
+            robot.battery = battery
+            self.engine.tick.emit()
+            self.app.processEvents()
+            row = self.page.findChild(QWidget, "force_" + robot.id)
+            self.assertIsNotNone(row)
+            self.assertIn(str(battery), row.findChild(QLabel, "force_battery").text())
+            self.assertEqual(self.page.force_count.text(), f"{len(assigned)} 台")
+        robot.status = "offline"
+        self.engine.tick.emit()
+        self.app.processEvents()
+        self.assertEqual(self.page.force_count.text(), f"{len(assigned) - 1} 台")
+        self.assertIsNone(self.page.findChild(QWidget, "force_" + robot.id))
+        for r in assigned:
+            r.assigned_fire_id = ""
+        self.engine.tick.emit()
+        self.app.processEvents()
+        self.assertEqual(self.page.force_count.text(), "0 台")
+        self.assertTrue(self.page.force_strip.isHidden())
 
     def test_suspicious_fire_is_tracked(self):
         fire = self.engine.trigger_suspicious_fire((0.4, 0.4))

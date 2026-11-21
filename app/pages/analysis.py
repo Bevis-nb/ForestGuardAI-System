@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QSlider, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget
 
 from .. import theme
 from ..canvas import TerrainMap, VideoFeed
@@ -162,9 +162,22 @@ class AnalysisPage(ScrollPage):
         self.force_text = label("该火点暂无已分配装备", "caption", color=theme.MUTED)
         self.force_text.setWordWrap(True)
         decision.addWidget(self.force_text)
-        self.force_rows = QVBoxLayout()
+        self.force_strip = QScrollArea()
+        self.force_strip.setObjectName("forceStrip")
+        self.force_strip.setFrameShape(QFrame.Shape.NoFrame)
+        self.force_strip.setWidgetResizable(True)
+        self.force_strip.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.force_strip.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.force_strip.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.force_strip.setFixedHeight(104)
+        self.force_strip.setStyleSheet("#forceStrip { background: transparent; border: none; }")
+        force_content = QWidget()
+        self.force_rows = QHBoxLayout(force_content)
+        self.force_rows.setContentsMargins(0, 0, 0, 0)
         self.force_rows.setSpacing(6)
-        decision.addLayout(self.force_rows)
+        self.force_rows.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.force_strip.setWidget(force_content)
+        decision.addWidget(self.force_strip)
         self._force_signature = None
         decision.addStretch(1)
         body.addWidget(decision, 2)
@@ -176,47 +189,58 @@ class AnalysisPage(ScrollPage):
         self._on_time(self.slider.value())
 
     def _refresh_forces(self, fire_id: str | None):
-        assigned = [r for r in self.engine.robots if fire_id and r.assigned_fire_id == fire_id]
+        assigned = [r for r in self.engine.robots if fire_id and r.assigned_fire_id == fire_id
+                    and r.status == "on_mission" and r.mission in ("recon", "en_route", "spraying")]
         entries = [(r, r.task) for r in assigned]
         signature = (fire_id, tuple((r.id, r.kind, task, r.status, round(r.battery))
                                     for r, task in entries))
         if signature == self._force_signature:
             return
-        self._force_signature = signature
         while self.force_rows.count():
             item = self.force_rows.takeAt(0)
-            if item.widget():
-                item.widget().hide()
-                item.widget().setParent(None)
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
         self.force_count.set_text(f"{len(entries)} 台")
         self.force_count.set_kind("success" if entries else "info")
         self.force_text.setVisible(not entries)
+        self.force_strip.setVisible(bool(entries))
         self.force_text.setText("暂无可用装备，系统将自动重试调度" if fire_id else "暂无已分配装备")
         for r, task_name in entries:
             is_uav = r.kind == "UAV"
             row = QWidget()
             row.setObjectName("force_" + r.id)
+            row.setFixedSize(150, 76)
             color = theme.BLUE if is_uav else theme.ACCENT_DARK
             bg = theme.BLUE_SOFT if is_uav else theme.ACCENT_SOFT
             row.setStyleSheet(f"#{row.objectName()} {{ background:{bg}; border-radius:10px; }}")
-            lay = QHBoxLayout(row)
-            lay.setContentsMargins(9, 7, 9, 7)
-            lay.setSpacing(8)
-            icon = IconTile("drone" if is_uav else "robot", color, theme.SURFACE, 32, 16, 9)
+            lay = QVBoxLayout(row)
+            lay.setContentsMargins(8, 7, 8, 6)
+            lay.setSpacing(4)
+            head = QHBoxLayout()
+            head.setSpacing(6)
+            icon = IconTile("drone" if is_uav else "robot", color, theme.SURFACE, 26, 14, 8)
             icon.setObjectName("drone_icon" if is_uav else "robot_icon")
-            lay.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
-            col = QVBoxLayout()
-            col.setSpacing(2)
-            col.addWidget(label(f"{r.id} · {'无人机' if is_uav else '地面机器人'}", None,
-                                color=color, size=11.5, weight=700))
+            head.addWidget(icon)
+            identity = QVBoxLayout()
+            identity.setSpacing(0)
+            identity.addWidget(label(r.id, None, color=color, size=11, weight=700))
+            battery = label(f"电量 {r.battery:.0f}%", "caption", color=theme.MUTED)
+            battery.setObjectName("force_battery")
+            identity.addWidget(battery)
+            head.addLayout(identity, 1)
+            lay.addLayout(head)
             task = label(task_name, "caption", color=theme.TEXT_SOFT)
+            task.setObjectName("force_task")
+            task.setToolTip(task_name)
             task.setWordWrap(True)
-            col.addWidget(task)
-            lay.addLayout(col, 1)
-            lay.addWidget(label(f"{r.battery:.0f}%", "caption", color=theme.MUTED))
+            lay.addWidget(task)
+            row.setToolTip(f"{r.id} · {'无人机' if is_uav else '地面机器人'}\n{task_name}\n电量 {r.battery:.0f}%")
             self.force_rows.addWidget(row)
             row.show()
+        self._force_signature = signature
 
     def _select_fire(self, fire_id: str):
         if any(f.id == fire_id and f.state != "extinguished" for f in self.engine.fires):
