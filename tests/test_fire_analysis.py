@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
+from app.canvas import VideoFeed, feed_pixmap
 from app.pages.analysis import AnalysisPage
 from app.simulation import SimEngine
 
@@ -104,7 +105,7 @@ class FireAnalysisTests(unittest.TestCase):
         self.app.processEvents()
         assigned = [r for r in self.engine.robots if r.assigned_fire_id == fire.id]
         self.assertEqual(self.page.force_count.text(), f"{len(assigned)} 台")
-        self.assertTrue(self.page.force_text.isHidden())
+        self.assertEqual(self.page.force_text.text(), "当前火点已投入装备")
         for robot in assigned:
             row = self.page.findChild(QWidget, "force_" + robot.id)
             self.assertIsNotNone(row)
@@ -137,7 +138,54 @@ class FireAnalysisTests(unittest.TestCase):
         self.engine.tick.emit()
         self.app.processEvents()
         self.assertEqual(self.page.force_count.text(), "0 台")
-        self.assertTrue(self.page.force_strip.isHidden())
+        self.assertTrue(self.page.force_strip.isVisible())
+
+    def test_video_feed_tracks_fire_and_channel(self):
+        view = self.page.cam
+        self.assertFalse(view._has_active_fire())
+        eo_clear = feed_pixmap("eo", False)
+        ir_clear = feed_pixmap("ir", False)
+        eo_fire = feed_pixmap("eo", True)
+        ir_fire = feed_pixmap("ir", True)
+        for pixmap in (eo_clear, ir_clear, eo_fire, ir_fire):
+            self.assertFalse(pixmap.isNull())
+        self.assertNotEqual(eo_clear.cacheKey(), eo_fire.cacheKey())
+        self.assertNotEqual(ir_clear.cacheKey(), ir_fire.cacheKey())
+        view.set_thermal(True)
+        self.assertEqual(view.mode, "ir")
+        view.grab()
+        first = self.engine.ignite_random_fire((0.3, 0.3))
+        second = self.engine.ignite_random_fire((0.7, 0.7))
+        self.assertTrue(view._has_active_fire())
+        view.grab()
+        first.state = "extinguished"
+        self.assertTrue(view._has_active_fire())
+        second.state = "extinguished"
+        self.engine.tick.emit()
+        self.assertFalse(view._has_active_fire())
+        view.set_thermal(False)
+        view.grab()
+        # VideoFeed 也允许不传引擎，应使用无火情场景而不抛异常。
+        standalone = VideoFeed()
+        standalone.grab()
+        self.assertFalse(standalone._has_active_fire())
+        standalone.deleteLater()
+
+    def test_analysis_panel_sizes_stay_stable_when_fire_changes(self):
+        self.app.processEvents()
+        panels = (self.page.vision_panel, self.page.spread_panel, self.page.decision_panel)
+        before = [panel.size() for panel in panels]
+        strip_height = self.page.force_strip.height()
+        fire = self.engine.ignite_random_fire((0.4, 0.4))
+        self.page._refresh()
+        self.app.processEvents()
+        self.assertEqual([panel.size() for panel in panels], before)
+        self.assertEqual(self.page.force_strip.height(), strip_height)
+        fire.state = "extinguished"
+        self.page._refresh()
+        self.app.processEvents()
+        self.assertEqual([panel.size() for panel in panels], before)
+        self.assertEqual(self.page.force_strip.height(), strip_height)
 
     def test_suspicious_fire_is_tracked(self):
         fire = self.engine.trigger_suspicious_fire((0.4, 0.4))

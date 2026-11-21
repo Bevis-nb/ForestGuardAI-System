@@ -25,6 +25,17 @@ class MultiFireSpreadTests(unittest.TestCase):
         self.assertEqual(result["grid"], ga)
         self.assertEqual(self.model.assess_all([self.b], 30, 0, 4, 30)["grid"], [])
 
+    def test_isolation_is_a_curved_band_with_multiple_points(self):
+        result = self.model.assess_all([self.a], 30, 0, 4, 30)
+        points = result["fires"][self.a.id]["line"]
+        self.assertGreater(len(points), 2)
+        start, middle, end = points[0], points[len(points) // 2], points[-1]
+        cross = ((middle[0] - start[0]) * (end[1] - start[1])
+                 - (middle[1] - start[1]) * (end[0] - start[0]))
+        self.assertGreater(abs(cross), 1e-4)
+        self.assertGreater(result["fires"][self.a.id]["width_m"], 0)
+        self.assertTrue(all(0 <= coordinate <= 1 for point in points for coordinate in point))
+
     def test_isolation_considers_other_fire_and_wind(self):
         alone = self.model.assess_all([self.a], 30, 0, 4, 30)
         together = self.model.assess_all([self.a, self.b], 30, 0, 4, 30)

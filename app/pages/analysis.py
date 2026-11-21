@@ -20,9 +20,18 @@ class AnalysisPage(ScrollPage):
         body = QHBoxLayout()
         body.setSpacing(14)
 
-        vision = Panel("AI 火情识别", "可见光 / 热成像演示画面", "camera")
+        def stable_panel(panel):
+            # 高度由页面滚动承载，宽度按列比例分配，不受实时文字长度影响。
+            panel.setFixedHeight(820)
+            panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            return panel
+
+        vision = stable_panel(Panel("AI 火情识别", "可见光 / 热成像演示画面", "camera"))
+        self.vision_pill = Pill("无火情", "success")
+        vision.add_action(self.vision_pill)
         self.cam = VideoFeed(engine)
-        self.cam.setMinimumHeight(210)
+        self.cam.setMinimumWidth(0)
+        self.cam.setFixedHeight(300)
         vision.add(self.cam, 1)
         mode = QHBoxLayout()
         mode.addWidget(label("热成像", "caption"))
@@ -37,16 +46,17 @@ class AnalysisPage(ScrollPage):
         for bar in (self.fire_bar, self.smoke_bar, self.normal_bar):
             vision.add(bar)
         vision.addWidget(label("识别分数与视频均为演示数据", "caption"))
+        self.vision_panel = vision
         body.addWidget(vision, 2)
 
-        spread = Panel("火势蔓延预测", "与林区实时态势使用同一底图 · 点击火点切换", "flame")
+        spread = stable_panel(Panel("火势蔓延预测", "与林区实时态势使用同一底图 · 点击火点切换", "flame"))
         self.selection_pill = Pill("无活跃火点", "info")
         spread.add_action(self.selection_pill)
         self.map = TerrainMap(engine, "analysis")
         self.map.set_robots_visible(False)
         self.map.select_fires = True
         self.map.fire_selected.connect(self._select_fire)
-        self.map.setMinimumHeight(300)
+        self.map.setFixedHeight(430)
         spread.add(self.map, 1)
         time_row = QHBoxLayout()
         time_row.addWidget(label("推演时刻", "caption"))
@@ -68,15 +78,17 @@ class AnalysisPage(ScrollPage):
         spread.addLayout(metrics)
         self.total_area = label("全部火点潜在燃烧区：—", "caption", color=theme.TEXT_SOFT)
         spread.addWidget(self.total_area)
-        spread.addWidget(label("色块合并全部火点；虚线为各火点隔离带，红线需人工复核。仅供仿真演示。", "caption"))
+        spread.addWidget(label("色块合并全部火点；弧形色带为建议隔离带，红色需人工复核。仅供仿真演示。", "caption"))
+        self.spread_panel = spread
         body.addWidget(spread, 3)
 
-        decision = Panel("灭火策略", "针对选中火点动态生成 · 仅供演示", "shield")
+        decision = stable_panel(Panel("灭火策略", "针对选中火点动态生成 · 仅供演示", "shield"))
         self.strategy_pill = Pill("无火情", "info")
         decision.add_action(self.strategy_pill)
 
         # 以不同层级的卡片区分火情摘要、隔离带和行动建议。
         summary = QWidget()
+        summary.setFixedHeight(75)
         soft_bg(summary, theme.ACCENT_SOFT, 12)
         summary_lay = QHBoxLayout(summary)
         summary_lay.setContentsMargins(12, 12, 12, 12)
@@ -112,6 +124,7 @@ class AnalysisPage(ScrollPage):
         decision.addLayout(metrics_row)
 
         isolation = QWidget()
+        isolation.setFixedHeight(108)
         soft_bg(isolation, theme.SURFACE_ALT, 12)
         iso_lay = QVBoxLayout(isolation)
         iso_lay.setContentsMargins(12, 11, 12, 12)
@@ -129,6 +142,7 @@ class AnalysisPage(ScrollPage):
         decision.addWidget(isolation)
 
         action = QWidget()
+        action.setFixedHeight(128)
         soft_bg(action, theme.SURFACE_ALT, 12)
         action_lay = QVBoxLayout(action)
         action_lay.setContentsMargins(12, 11, 12, 12)
@@ -157,10 +171,12 @@ class AnalysisPage(ScrollPage):
         force_head.addWidget(IconTile("users", theme.ACCENT, theme.ACCENT_SOFT, 30, 15, 9))
         force_head.addWidget(label("投入力量", None, size=12, weight=700), 1)
         self.force_count = Pill("0 台", "info", dot=False)
+        self.force_count.setFixedWidth(58)
         force_head.addWidget(self.force_count)
         decision.addLayout(force_head)
         self.force_text = label("该火点暂无已分配装备", "caption", color=theme.MUTED)
         self.force_text.setWordWrap(True)
+        self.force_text.setFixedHeight(30)
         decision.addWidget(self.force_text)
         self.force_strip = QScrollArea()
         self.force_strip.setObjectName("forceStrip")
@@ -180,6 +196,7 @@ class AnalysisPage(ScrollPage):
         decision.addWidget(self.force_strip)
         self._force_signature = None
         decision.addStretch(1)
+        self.decision_panel = decision
         body.addWidget(decision, 2)
         self.root.addLayout(body, 1)
 
@@ -205,9 +222,8 @@ class AnalysisPage(ScrollPage):
                 widget.deleteLater()
         self.force_count.set_text(f"{len(entries)} 台")
         self.force_count.set_kind("success" if entries else "info")
-        self.force_text.setVisible(not entries)
-        self.force_strip.setVisible(bool(entries))
-        self.force_text.setText("暂无可用装备，系统将自动重试调度" if fire_id else "暂无已分配装备")
+        self.force_text.setText("当前火点已投入装备" if entries else
+                                ("暂无可用装备，系统将自动重试调度" if fire_id else "暂无已分配装备"))
         for r, task_name in entries:
             is_uav = r.kind == "UAV"
             row = QWidget()
@@ -255,6 +271,9 @@ class AnalysisPage(ScrollPage):
 
     def _refresh(self):
         e = self.engine
+        has_fire = any(f.state != "extinguished" for f in e.fires)
+        self.vision_pill.set_text("火情模拟" if has_fire else "无火情")
+        self.vision_pill.set_kind("critical" if has_fire else "success")
         fire_score, smoke, normal = e.vision_scores()
         self.fire_bar.set_value(fire_score)
         self.smoke_bar.set_value(smoke)
@@ -288,7 +307,7 @@ class AnalysisPage(ScrollPage):
         aggregate = e.spread_model.assess_all(active, self.slider.value() * 30,
                                                e.wind_deg, e.wind_speed, e.humidity)
         prediction = aggregate["fires"][fire.id]
-        a, b = prediction["line"]
+        a, b = prediction["line"][0], prediction["line"][-1]
         self.total_area.setText(f"全部火点潜在燃烧区：{aggregate['area']:.1f} ha（重叠区域不重复统计）")
         self.selection_pill.set_text(f"分析 {fire.id} · {len(active)} 个火点")
         self.strategy_pill.set_text("待勘察" if fire.state == "suspicious" else "模拟建议")

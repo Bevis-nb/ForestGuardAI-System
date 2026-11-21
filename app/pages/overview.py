@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QSizePolicy, QVBoxLayout, QWidget
 
 from .. import icons, theme
 from ..canvas import VideoFeed, TerrainMap
@@ -72,6 +72,8 @@ class OverviewPage(ScrollPage):
 
         # 地图
         map_panel = Panel("林区实时态势", "多源融合 · 热成像火点已标定", "map")
+        map_panel.setFixedHeight(480)
+        map_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         map_panel.add_action(kv_chip("wind", self.engine.wind_label(), theme.BLUE, theme.BLUE_SOFT))
         map_panel.add_action(kv_chip("thermo", f"{self.engine.temperature:.1f}℃", theme.AMBER, theme.AMBER_SOFT))
         self.map = TerrainMap(self.engine, "overview")
@@ -94,6 +96,8 @@ class OverviewPage(ScrollPage):
         right.setSpacing(14)
 
         risk_panel = Panel("火险综合研判", "多因子加权 · 每 60 秒刷新", "shield")
+        risk_panel.setFixedHeight(260)
+        risk_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         risk_panel.add_action(Pill("极高风险", "critical"))
         self.contain_pill = Pill("控制率 18.4%", "success")
         inner = QHBoxLayout()
@@ -115,6 +119,8 @@ class OverviewPage(ScrollPage):
         right.addWidget(risk_panel)
 
         events_panel = Panel("协同事件流", "分布式协商 · 实时", "activity")
+        events_panel.setFixedHeight(206)
+        events_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         events_panel.add_action(Pill("9 台在线", "success"))
         self.events = EventList(self.engine.events, limit=3, show_time=True)
         events_panel.add(self.events)
@@ -127,8 +133,11 @@ class OverviewPage(ScrollPage):
         row = QHBoxLayout()
         row.setSpacing(14)
 
-        detect = Panel("AI 火情识别", "深度学习目标检测 · YOLO-Fire v3", "camera")
-        detect.add_action(Pill("在线推理", "success"))
+        detect = Panel("AI 火情识别", "可见光识别 · 仿真画面", "camera")
+        detect.setFixedHeight(300)
+        detect.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.vision_pill = Pill("无火情", "success")
+        detect.add_action(self.vision_pill)
         body = QHBoxLayout()
         body.setSpacing(12)
         self.cam = VideoFeed(self.engine)
@@ -150,6 +159,8 @@ class OverviewPage(ScrollPage):
         row.addWidget(detect, 3)
 
         fleet = Panel("装备状态", "空地协同编队 · 8 台", "robot")
+        fleet.setFixedHeight(300)
+        fleet.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         fleet.add_action(button("装备管理", "ghost", height=26, size=11,
                                 on_click=self._go_fleet))
         self.fleet_rows = QVBoxLayout()
@@ -159,6 +170,8 @@ class OverviewPage(ScrollPage):
         self._refresh_robot_rows()
 
         self.alerts_panel = Panel("实时告警", "自动推送 · 按等级排序", "bell")
+        self.alerts_panel.setFixedHeight(300)
+        self.alerts_panel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.alerts_panel.add_action(button("全部", "ghost", height=26, size=11,
                                             on_click=self._go_alerts))
         self.alert_list = QVBoxLayout()
@@ -206,6 +219,8 @@ class OverviewPage(ScrollPage):
     def _refresh(self):
         e = self.engine
         active_fires = [f for f in e.fires if f.state != "extinguished"]
+        self.vision_pill.set_text("火情模拟" if active_fires else "无火情")
+        self.vision_pill.set_kind("critical" if active_fires else "success")
         self.fire_chip.set_text(f"活跃火点 {len(active_fires)} 处" if active_fires else "暂无活跃火点")
         self.fleet_chip.set_text(f"{sum(r.status != 'offline' for r in e.robots)} 台装备在线 · 空地协同")
         self.stat_fire.set_value(f"{e.fire_area:.1f}")

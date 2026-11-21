@@ -243,8 +243,11 @@ class FireSpreadModel:
         half = min(0.18, 0.06 + distance * 0.45)
         def clamp(value):
             return max(0.0, min(1.0, value))
-        line = ((clamp(cx + dy * half), clamp(cy - dx * half)),
-                (clamp(cx - dy * half), clamp(cy + dx * half)))
+        # 带状隔离线以弧形包围下风向火头；采样点也用于全火点避让检测。
+        bend = min(0.07, 0.02 + distance * 0.2)
+        line = tuple((clamp(cx + dy * half * u + dx * bend * (1 - u * u)),
+                      clamp(cy - dx * half * u + dy * bend * (1 - u * u)))
+                     for u in (i / 6 for i in range(-6, 7)))
         # 地图尺度 1200m × 800m，像元统计面积仅为演示估计。
         area = sum(v >= 0.4 for row in grid for v in row) * (1200 * 800 / (w * h)) / 10000
         return {"grid": grid, "line": line, "area": area,
@@ -270,28 +273,31 @@ class FireSpreadModel:
         dx, dy = math.cos(math.radians(wind_deg)), math.sin(math.radians(wind_deg))
         for fire in active:
             item = assessments[fire.id]
-            a, b = item["line"]
-            # 线段外移的同时检测全部火点的中高概率区，防止穿越相邻火场。
+            base_line = item["line"]
+            # 弧线外移时逐段采样全部火点的中高概率区，防止穿越相邻火场。
             found = None
             for step in range(31):
                 offset = step * 0.015
                 line = tuple((point[0] + dx * offset, point[1] + dy * offset)
-                             for point in (a, b))
+                             for point in base_line)
                 if any(not (0 <= x <= 1 and 0 <= y <= 1) for x, y in line):
                     break
                 safe = True
-                for i in range(41):
-                    t = i / 40
-                    x = line[0][0] * (1 - t) + line[1][0] * t
-                    y = line[0][1] * (1 - t) + line[1][1] * t
-                    if combined[min(h - 1, int(y * h))][min(w - 1, int(x * w))] >= 0.4:
-                        safe = False
+                for start, end in zip(line, line[1:]):
+                    for i in range(5):
+                        t = i / 4
+                        x = start[0] * (1 - t) + end[0] * t
+                        y = start[1] * (1 - t) + end[1] * t
+                        if combined[min(h - 1, int(y * h))][min(w - 1, int(x * w))] >= 0.4:
+                            safe = False
+                            break
+                    if not safe:
                         break
                 if safe:
                     found = line
                     break
             item["line_conflict"] = found is None
-            item["line"] = found if found is not None else (a, b)
+            item["line"] = found if found is not None else base_line
         area = sum(v >= 0.4 for row in combined for v in row) * (1200 * 800 / (w * h)) / 10000
         return {"grid": combined, "fires": assessments, "area": area}
 

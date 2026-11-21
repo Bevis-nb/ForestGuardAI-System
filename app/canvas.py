@@ -354,17 +354,27 @@ class TerrainMap(QWidget):
         ordered = sorted(fires, key=lambda f: f.id == self.selected_fire_id)
         for fire in ordered:
             item = prediction["fires"][fire.id]
-            a, b = item["line"]
-            p1, p2 = self.pt(a), self.pt(b)
+            points = [self.pt(point) for point in item["line"]]
+            path = QPainterPath(points[0])
+            for point in points[1:]:
+                path.lineTo(point)
             selected = fire.id == self.selected_fire_id
-            p.setPen(QPen(C("#FFFFFF"), 6 if selected else 4))
-            p.drawLine(p1, p2)
-            color = theme.RED if item["line_conflict"] else theme.AMBER
-            p.setPen(QPen(C(color), 3 if selected else 2, Qt.PenStyle.DashLine))
-            p.drawLine(p1, p2)
+            color = C(theme.RED if item["line_conflict"] else theme.AMBER)
+            # 透明宽线表示隔离带的面积；中心虚线是建议路径。
+            width = max(6.0, item["width_m"] / 1200 * r.width())
+            band = QColor(color)
+            band.setAlpha(75 if selected else 50)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(band, width + 3, Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            p.drawPath(path)
+            p.setPen(QPen(C("#FFFFFF"), 4 if selected else 3))
+            p.drawPath(path)
+            p.setPen(QPen(color, 2.5 if selected else 1.5, Qt.PenStyle.DashLine))
+            p.drawPath(path)
             p.setFont(_font(9 if selected else 8, 700))
-            p.setPen(QPen(C(color)))
-            p.drawText((p1 + p2) / 2 + QPointF(4, -5), fire.id)
+            p.setPen(QPen(color))
+            p.drawText(points[len(points) // 2] + QPointF(4, -7), fire.id)
 
     def highlight_fire(self):
         self._highlight = 3.2
@@ -1129,9 +1139,9 @@ _ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 _feed_cache: dict[str, QPixmap] = {}
 
 
-def feed_pixmap(mode: str = "eo") -> QPixmap:
-    """加载实拍无人机画面（EO / 红外），带缓存。"""
-    key = "feed_ir" if mode == "ir" else "feed_eo"
+def feed_pixmap(mode: str = "eo", fire_active: bool = True) -> QPixmap:
+    """加载演示素材：按可见光/红外与火情状态选择，并缓存。"""
+    key = ("feed_ir" if mode == "ir" else "feed_eo") + ("" if fire_active else "_clear")
     if key not in _feed_cache:
         pm = QPixmap(os.path.join(_ASSET_DIR, f"{key}.jpg"))
         _feed_cache[key] = pm
@@ -1139,7 +1149,7 @@ def feed_pixmap(mode: str = "eo") -> QPixmap:
 
 
 class VideoFeed(QWidget):
-    """无人机实时视频画面：真实航拍底图 + 遥测 OSD + 目标框。"""
+    """无人机视频演示画面：根据火情切换素材，并叠加模拟遥测。"""
 
     def __init__(self, engine: SimEngine | None = None, mode: str = "eo",
                  connected: bool = True, parent=None, show_boxes: bool = True):
@@ -1156,6 +1166,11 @@ class VideoFeed(QWidget):
         self._timer.setInterval(80)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
+        if self.engine is not None:
+            self.engine.tick.connect(self.update)
+
+    def _has_active_fire(self) -> bool:
+        return self.engine is not None and any(f.state != "extinguished" for f in self.engine.fires)
 
     # ------------------------------------------------------------------
     def _tick(self):
@@ -1181,8 +1196,9 @@ class VideoFeed(QWidget):
         self.update()
 
     # ------------------------------------------------------------------
-    def _cover_source(self, target_ratio: float) -> QRectF:
-        pm = feed_pixmap(self.mode)
+    def _cover_source(self, target_ratio: float, pm: QPixmap | None = None) -> QRectF:
+        if pm is None:
+            pm = feed_pixmap(self.mode, self._has_active_fire())
         if pm.isNull():
             return QRectF()
         sw, sh = pm.width(), pm.height()
@@ -1217,8 +1233,8 @@ class VideoFeed(QWidget):
             p.end()
             return
 
-        pm = feed_pixmap(self.mode)
-        src = self._cover_source(r.width() / max(1, r.height()))
+        pm = feed_pixmap(self.mode, self._has_active_fire())
+        src = self._cover_source(r.width() / max(1, r.height()), pm)
         p.drawPixmap(r, pm, src)
 
         # 动态噪点 + 扫描线 + 暗角
@@ -1332,7 +1348,7 @@ class VideoFeed(QWidget):
             p.drawText(QRectF(w - 96, h - 52, 70, 14), Qt.AlignmentFlag.AlignRight, "ZOOM ×1.0")
 
         # 目标框
-        if self.show_boxes and any(f.state != "extinguished" for f in self.engine.fires):
+        if self.show_boxes and self._has_active_fire():
             fire = (0.44, 0.46, 0.40, 0.34)
             smoke = (0.52, 0.15, 0.40, 0.28)
             p.setFont(_font(8.5, 700))
