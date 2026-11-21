@@ -1,6 +1,7 @@
 """导航页每设备设置及地图共用路线的界面测试。"""
 import os
 import unittest
+from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 from app.canvas import TerrainMap
@@ -24,6 +25,17 @@ class NavigationPageTests(unittest.TestCase):
         self.page.close()
         self.page.deleteLater()
         self.app.processEvents()
+
+    def test_overview_does_not_draw_routes(self):
+        overview = TerrainMap(self.engine, "overview")
+        overview.resize(600, 400)
+        overview.show()
+        self.app.processEvents()
+        with patch.object(overview, "_paint_path") as paint_path:
+            overview.grab()
+            paint_path.assert_not_called()
+        overview.close()
+        overview.deleteLater()
 
     def test_independent_selection_and_shared_maps(self):
         a, b = self.engine.robots[:2]

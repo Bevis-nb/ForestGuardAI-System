@@ -304,7 +304,7 @@ class TerrainMap(QWidget):
             self._paint_heat(p, r)
         self._paint_bases(p, r)
         self._paint_fire(p, r)
-        if self.show_path or (self._show_robots and self.mode != "navigation"):
+        if self.show_path or (self._show_robots and self.mode == "analysis"):
             self._paint_path(p, r)
         self._paint_robots(p, r)
         p.restore()

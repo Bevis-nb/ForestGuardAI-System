@@ -21,6 +21,9 @@ ROBOT_OVERHEAT_TEMP = 60.0
 ROBOT_LOW_BATTERY = 30.0
 ROBOT_RECOVERY_TEMP = 35.0
 SPRAY_RANGE = 0.06  # 地图归一化距离，仅供仿真
+# 九条往返扫描航带，边界留出 0.08 地图单位；规划器负责绕开栅格障碍。
+PATROL_WAYPOINTS = tuple((x, y) for i, y in enumerate((.08, .18, .28, .38, .48, .58, .68, .78, .88, .92))
+                         for x in ((.08, .92) if i % 2 == 0 else (.92, .08)))
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +377,7 @@ class Robot:
     route_plan: PathPlan | None = None
     route_failed: bool = False
     patrol_index: int = 0
+    patrol_incomplete: bool = False
 
     @property
     def status_text(self) -> str:
@@ -530,6 +534,7 @@ class SimEngine(QObject):
                 r.temp = 25.0
                 r.status = "on_mission" if (b_idx in (0, 2) and i == 0) else "standby"
                 r.mission = "patrol" if (b_idx in (0, 2) and i == 0) else "idle"
+                r.patrol_incomplete = r.mission == "patrol"
                 r.task = "全林区覆盖巡逻" if r.mission == "patrol" else f"{bname}待命"
                 r.altitude = 80 + i * 6 if kind == "UAV" else 0
                 r.speed = 4.2 if kind == "UAV" else 1.1
@@ -601,14 +606,15 @@ class SimEngine(QObject):
                 self._next_fire_in = self.rng.randint(18, 32)
                 self.ignite_random_fire(auto_notify=True)
 
-        # 保持固定 2 架健康无人机执行全林区覆盖巡逻（100s 全覆盖）
+        # 保持两架无人机巡逻；每架完成全部航带后才可被调度。
         patrol_uavs = [r for r in self.robots if r.kind == "UAV" and r.mission == "patrol"]
         if len(patrol_uavs) < 2:
-            for r in self.robots:
-                if r.kind == "UAV" and r.mission == "idle" and r.status in ("standby", "on_mission") and r.battery >= ROBOT_LOW_BATTERY and r.temp <= 45.0 and not r.thermal_rest:
+            for r in sorted(self.robots, key=lambda unit: not unit.patrol_incomplete):
+                if r.kind == "UAV" and r.mission == "idle" and r.status in ("standby", "on_mission") and r.battery >= ROBOT_LOW_BATTERY and r.temp <= 45.0 and not r.thermal_rest and not r.needs_refill:
+                    r.patrol_incomplete = True
                     r.mission = "patrol"
                     r.status = "on_mission"
-                    r.task = "全林区覆盖巡逻"
+                    r.task = f"林区巡逻 · 航带 {r.patrol_index // 2 + 1}/{len(PATROL_WAYPOINTS) // 2}"
                     self._ensure_robot_route(r)
                     patrol_uavs.append(r)
                     if len(patrol_uavs) >= 2:
@@ -834,9 +840,7 @@ class SimEngine(QObject):
         if r.status != "on_mission":
             return None
         if r.mission == "patrol":
-            waypoints = ((.15, .18), (.35, .45), (.65, .45), (.85, .18),
-                         (.85, .82), (.65, .55), (.35, .55), (.15, .82))
-            return waypoints[r.patrol_index % len(waypoints)]
+            return PATROL_WAYPOINTS[r.patrol_index % len(PATROL_WAYPOINTS)]
         if r.mission in ("recon", "en_route"):
             return (r.target_x, r.target_y)
         return None
@@ -898,7 +902,16 @@ class SimEngine(QObject):
             if self._follow_robot_route(r, 0.014):
                 r.patrol_index += 1
                 r.route_goal = None
-                self._ensure_robot_route(r)
+                if r.patrol_index >= len(PATROL_WAYPOINTS):
+                    r.patrol_index = 0
+                    r.patrol_incomplete = False
+                    r.mission, r.status = "idle", "standby"
+                    r.task = "巡逻一轮完成 · 待命"
+                    self._ensure_robot_route(r)
+                    self.push_event(f"{r.id} 完成一轮扫描航带，现可参与调度", "success")
+                else:
+                    r.task = f"林区巡逻 · 航带 {r.patrol_index // 2 + 1}/{len(PATROL_WAYPOINTS) // 2}"
+                    self._ensure_robot_route(r)
             return
         if r.mission == "recon":
             if self._follow_robot_route(r, 0.026):
@@ -993,7 +1006,7 @@ class SimEngine(QObject):
                for r in self.robots):
             return None
         uavs = [r for r in self.robots if r.kind == "UAV" and r.status in ("standby", "on_mission")
-                and r.mission in ("idle", "patrol") and not r.assigned_fire_id and r.battery >= ROBOT_LOW_BATTERY
+                and r.mission == "idle" and not r.patrol_incomplete and not r.assigned_fire_id and r.battery >= ROBOT_LOW_BATTERY
                 and r.temp <= ROBOT_OVERHEAT_TEMP and not r.thermal_rest and not r.needs_refill]
         if not uavs:
             return None
@@ -1018,7 +1031,7 @@ class SimEngine(QObject):
             return []
         fx, fy = fire.origin
         candidates = [r for r in self.robots if r.status in ("standby", "on_mission")
-                      and r.mission in ("idle", "patrol") and not r.assigned_fire_id
+                      and r.mission == "idle" and not r.patrol_incomplete and not r.assigned_fire_id
                       and r.battery >= ROBOT_LOW_BATTERY and r.water_l > 1.8
                       and r.temp <= ROBOT_OVERHEAT_TEMP and not r.thermal_rest and not r.needs_refill]
         plan: list[dict] = []
@@ -1076,7 +1089,7 @@ class SimEngine(QObject):
                 continue
             r = id_map.get(p["robot_id"])
             if (not r or r.status not in ("standby", "on_mission") or
-                    r.mission not in ("idle", "patrol") or r.assigned_fire_id or
+                    r.mission != "idle" or r.patrol_incomplete or r.assigned_fire_id or
                     r.battery < ROBOT_LOW_BATTERY or r.temp > ROBOT_OVERHEAT_TEMP or
                     r.thermal_rest or r.needs_refill):
                 continue
