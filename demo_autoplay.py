@@ -1,83 +1,152 @@
-"""全自动演示脚本（慢速清晰版）：依次演示「预警勘察流程」与「突发扑救扑灭流程 + 3D 遥控」。
+"""ForestGuard AI 慢速自动演示（仅仿真，不适用于实战）。
 
-用法：
-    python demo_autoplay.py
+运行：python demo_autoplay.py
+演示自动登录并依次展示巡逻、自动起火、路径、协作、火情与装备管理。
+所有设备均使用真实的仿真状态机，不强制瞬移、喷洒或扑灭。
 """
 from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QObject, QTimer
 from PySide6.QtWidgets import QApplication
 
-from app import theme
+from app import config, theme
 from app.main_window import MainWindow
-from app.pages.fleet import RemoteControlDialog
 from app.widgets import toast
+
+
+class DemoController(QObject):
+    """使用窗口持有的单次定时器切换页面，退出或关闭时不再推进。"""
+
+    def __init__(self, window: MainWindow):
+        super().__init__(window)
+        self.window = window
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self._next)
+        self.stage = -1
+        self.fire_id: str | None = None
+        self._wait_elapsed = 0
+        self.finished = False
+        self.steps = (
+            (self._login, 10_000),
+            (self._overview, 12_000),
+            (self._wait_for_fire, 0),
+            (self._navigation, 20_000),
+            (self._collaboration, 20_000),
+            (self._analysis, 25_000),
+            (self._fleet, 20_000),
+            (self._return_overview, 15_000),
+            (self._finish, 0),
+        )
+
+    def start(self) -> None:
+        if self.stage != -1 or self.finished:
+            return
+        self.timer.start(3_000)  # 先展示登录界面
+
+    def stop(self) -> None:
+        self.timer.stop()
+        self.finished = True
+
+    def _next(self) -> None:
+        if self.finished or not self.window.isVisible():
+            self.stop()
+            return
+        # 用户退出登录时，不再自动切换或重新登录。
+        if self.stage >= 0 and self.window.stack.currentWidget() is not self.window.dashboard:
+            self.stop()
+            return
+        self.stage += 1
+        if self.stage >= len(self.steps):
+            self.stop()
+            return
+        action, delay = self.steps[self.stage]
+        action()
+        if delay and not self.finished:
+            self.timer.start(delay)
+
+    def _login(self) -> None:
+        self.window.on_login("admin")
+        # 演示保持慢速，不修改保存的用户配置。
+        self.window.engine.sim_speed = 1
+        self.window.engine.timer.setInterval(1000)
+        self.window.dashboard.pages["overview"].speed_btn.setText("1× 倍速")
+
+    def _overview(self) -> None:
+        self.window.navigate_to("overview")
+        toast(self.window, "自动演示：观察基地出发与巡逻轮岗", "info")
+
+    def _wait_for_fire(self) -> None:
+        """等待正常自动起火，超过等待时间也继续演示，不制造假火情。"""
+        e = self.window.engine
+        active = sorted((f for f in e.fires if f.state != "extinguished"), key=lambda f: f.ignited_at)
+        if active:
+            self.fire_id = active[0].id
+        if active or self._wait_elapsed >= 40:
+            toast(self.window, "自动演示：展示实时任务和协作" if active else "暂未发现活跃火点，继续展示界面", "info")
+            self.timer.start(8_000)
+        else:
+            self._wait_elapsed += 1
+            self.stage -= 1
+            self.timer.start(1_000)
+
+    def _navigation(self) -> None:
+        self.window.navigate_to("navigation")
+        page = self.window.dashboard.pages["navigation"]
+        units = self.window.engine.active_fire_robots(self.fire_id) if self.fire_id else []
+        moving = next((r for r in units if r.mission in ("en_route", "recon") and not r.route_failed), None)
+        if moving:
+            page._on_robot_selected(moving.id)
+        toast(self.window, "自主导航：每台装备使用自己的规划路线", "info")
+
+    def _collaboration(self) -> None:
+        self.window.navigate_to("collaboration")
+        page = self.window.dashboard.pages["collaboration"]
+        if self.fire_id:
+            index = page.fire_filter.findData(self.fire_id)
+            if index >= 0:
+                page.fire_filter.setCurrentIndex(index)
+        toast(self.window, "多机协作：查看实际编组、任务与协作日志", "info")
+
+    def _analysis(self) -> None:
+        self.window.navigate_to("analysis")
+        page = self.window.dashboard.pages["analysis"]
+        if self.fire_id:
+            page._select_fire(self.fire_id)
+        toast(self.window, "火情分析：查看预测、隔离带及投入力量", "info")
+
+    def _fleet(self) -> None:
+        self.window.navigate_to("fleet")
+        page = self.window.dashboard.pages["fleet"]
+        units = self.window.engine.active_fire_robots(self.fire_id) if self.fire_id else []
+        if units:
+            page._select(units[0].id)
+        toast(self.window, "装备管理：查看任务、电量与温度", "info")
+
+    def _return_overview(self) -> None:
+        self.window.navigate_to("overview")
+        toast(self.window, "返回总览：火情和装备将继续自动演练", "info")
+
+    def _finish(self) -> None:
+        toast(self.window, "自动演示结束，可继续手动查看；仿真仍在运行", "success")
+        self.stop()
 
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setApplicationName("ForestGuard AI")
     app.setStyle("Fusion")
+    cfg = config.load()
+    theme.set_accent(cfg.get("accent", "森林绿"))
+    theme.set_density(bool(cfg.get("compact")))
+    theme.ANIMATIONS = bool(cfg.get("animations", True))
     theme.apply_theme(app)
-
     win = MainWindow()
+    controller = DemoController(win)
     win.show()
-    dlg_holder: list[RemoteControlDialog] = []
-
-    # 1. 管理员登录 (2.0s)
-    QTimer.singleShot(2000, lambda: win.on_login("admin"))
-
-    # 2. 流程一：火灾预警（可疑火点）→ 派无人机前往勘察 (5.0s)
-    def step_suspicious():
-        win.engine.sim_speed = 2
-        ov = win.dashboard.pages.get("overview")
-        if ov and hasattr(ov, "speed_btn"):
-            ov.speed_btn.setText("2× 倍速")
-        f = win.engine.trigger_suspicious_fire()
-        if ov:
-            ov.map.highlight_fire()
-        toast(win, f"流程一：发现可疑火点 {f.id}，已派无人机前往勘察", "warning")
-
-    QTimer.singleShot(5000, step_suspicious)
-
-    # 3. 展示自主调度推荐与评判标准 (13.0s)
-    QTimer.singleShot(
-        13000,
-        lambda: (
-            win.navigate_to("collaboration"),
-            toast(win, "查看设备调度推荐算法与 4 维评判标准", "info"),
-        ),
-    )
-
-    # 4. 流程二：突发随机起火 → 自动调度 → 2× 扑救扑灭 (19.0s)
-    def step_ignite():
-        win.navigate_to("overview")
-        f = win.engine.ignite_random_fire()
-        ov = win.dashboard.pages.get("overview")
-        if ov:
-            ov.map.highlight_fire()
-        toast(win, f"流程二：突发火点 {f.id}，已按调度方案派出空地编队 2× 扑救", "error")
-
-    QTimer.singleShot(19000, step_ignite)
-
-    # 5. 打开 3D 遥控视角演示现场扑火 (36.0s)
-    def step_3d():
-        win.navigate_to("fleet")
-        robot = win.engine.robots[0]
-        dlg = RemoteControlDialog(win.engine, robot, win)
-        dlg.show()
-        dlg.feed.spraying = True
-        dlg_holder.append(dlg)
-        toast(win, "3D 第一人称遥控视角：正在喷水扑救", "success")
-        for i in range(12):
-            QTimer.singleShot(1000 + i * 700, lambda idx=i: dlg.feed.pan(
-                dyaw=0.12 if idx < 6 else -0.12,
-                dz=0.12 if idx < 6 else -0.08,
-            ))
-
-    QTimer.singleShot(36000, step_3d)
-
+    controller.start()
     return app.exec()
 
 
