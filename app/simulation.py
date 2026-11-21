@@ -304,6 +304,7 @@ class SimEngine(QObject):
     tick = Signal()
     alert_added = Signal(dict)
     event_added = Signal(dict)
+    recon_confirmed = Signal(object)
 
     def __init__(self, seed: int = 2026):
         super().__init__()
@@ -340,7 +341,6 @@ class SimEngine(QObject):
         self.last_report: dict | None = None
         self._milestones: set[int] = set()
         self._dispatch_timer = 0.0
-        self.fire_confirmed = Signal if False else None
         self.auto_avoid = True
         self.estop = False
         self.formation = "楔形推进"
