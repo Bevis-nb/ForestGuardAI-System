@@ -360,6 +360,10 @@ class TerrainMap(QWidget):
         p.drawText(box, Qt.AlignmentFlag.AlignCenter, "建议隔离带")
         p.setPen(Qt.PenStyle.NoPen)
 
+    def highlight_fire(self):
+        self._highlight = 3.2
+        self.update()
+
     def _paint_bases(self, p: QPainter, r: QRectF):
         for _bid, bname, bx, by in BASES:
             pt = self.pt((bx, by))

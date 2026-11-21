@@ -253,6 +253,7 @@ class FireIncident:
     water_used_l: float = 0.0
     spread_rate: float = 0.0       # 每 tick 强度增量
     suppression_rate: float = 0.0  # 每 tick 强度削减
+    extinguished_at: float = -1.0
     history: list[float] = field(default_factory=list)
     area_history: list[float] = field(default_factory=list)
 
@@ -479,14 +480,31 @@ class SimEngine(QObject):
             self._next_fire_in = self.rng.randint(18, 32)
             self.ignite_random_fire(auto_notify=True)
 
+        # 保持固定 2 架无人机执行全林区覆盖巡逻（100s 全覆盖）
+        patrol_uavs = [r for r in self.robots if r.kind == "UAV" and r.mission == "patrol"]
+        if len(patrol_uavs) < 2:
+            for r in self.robots:
+                if r.kind == "UAV" and r.mission == "idle" and r.status != "offline" and r.battery >= 25.0:
+                    r.mission = "patrol"
+                    r.status = "on_mission"
+                    r.task = "全林区覆盖巡逻"
+                    patrol_uavs.append(r)
+                    if len(patrol_uavs) >= 2:
+                        break
+
         # 推进机器人移动与灭火作业
         suppression_by_fire: dict[str, float] = {}
+        active_fires_now = [f for f in self.fires if f.state != "extinguished"]
         for r in self.robots:
             if r.status == "offline":
                 continue
             if r.status == "on_mission":
                 r.battery = max(6.0, r.battery - self.rng.uniform(0.04, 0.12))
-                r.temp = max(20.0, min(58.0, r.temp + self.rng.uniform(-0.25, 0.3)))
+                near_fire = any(math.hypot(r.x - f.origin[0], r.y - f.origin[1]) < 0.14 for f in active_fires_now)
+                if near_fire:
+                    r.temp = min(68.0, r.temp + self.rng.uniform(1.5, 2.8))
+                else:
+                    r.temp = max(24.0, r.temp - 0.6)
                 r.speed = max(0.2, min(6.0, r.speed + self.rng.uniform(-0.15, 0.15)))
                 r.history = (r.history + [r.temp])[-14:]
             elif r.status == "charging":
@@ -534,6 +552,7 @@ class SimEngine(QObject):
                 f.intensity = 0.0
                 f.containment = 100.0
                 f.state = "extinguished"
+                f.extinguished_at = self.sim_time
                 duration = max(1, int(self.sim_time - f.ignited_at))
                 self.fire_history.append(f)
                 self.push_alert(
@@ -547,6 +566,12 @@ class SimEngine(QObject):
                         r.spraying = False
                         r.assigned_fire_id = ""
                         self._assign_nearest_base(r)
+
+        # 已扑灭火点 4 秒后从地图自动消失
+        self.fires = [
+            f for f in self.fires
+            if not (f.state == "extinguished" and f.extinguished_at >= 0 and self.sim_time - f.extinguished_at >= 4.0)
+        ]
 
         still_active = [f for f in self.fires if f.state != "extinguished"]
         if still_active:
@@ -602,8 +627,10 @@ class SimEngine(QObject):
         if self.estop or r.status not in ("on_mission", "returning"):
             return
         if r.mission == "patrol":
-            ang = self.sim_time * (0.06 if r.kind == "UAV" else 0.03) + hash(r.id) % 7
-            cx, cy = 0.48 + 0.24 * math.cos(ang), 0.48 + 0.20 * math.sin(ang)
+            # 100 秒全林区覆盖巡逻航线（往复扫描）
+            t = ((self.sim_time + (0 if r.id.endswith("1") else 50)) % 100) / 100.0
+            cx = 0.10 + 0.80 * abs(2 * ((t * 5) % 1.0) - 1.0)
+            cy = 0.14 + 0.72 * t
             dx, dy = cx - r.x, cy - r.y
             dist = max(0.001, math.hypot(dx, dy))
             step = 0.014 if r.kind == "UAV" else 0.008

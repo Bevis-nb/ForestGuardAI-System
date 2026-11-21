@@ -52,7 +52,11 @@ class NavPage(ScrollPage):
         map_panel.add_action(kv_chip("cpu", "关键帧 1,284"))
         self.map = TerrainMap(engine, "navigation")
         self.map.setMinimumHeight(372)
+        self._selected_robot_id = "UGV-01"
+        self.map.robot_selected.connect(self._on_robot_selected)
         map_panel.add(self.map, 1)
+        self.robot_info_label = label("点击地图上的设备查看单体状态（当前：UGV-01）", "caption", color=theme.TEXT_SOFT)
+        map_panel.add(self.robot_info_label)
 
         ctrl = QHBoxLayout()
         ctrl.setSpacing(9)
@@ -295,7 +299,18 @@ class NavPage(ScrollPage):
     def _on_threshold(self, value: int):
         self.safe_log.setText(f"最近事件：温度阈值调整为 {value} ℃，超限将自动刹停并请求指挥确认")
 
+    def _on_robot_selected(self, rid: str):
+        self._selected_robot_id = rid
+        self._refresh()
+        self._replan()
+
     def _refresh(self):
+        r = next((x for x in self.engine.robots if x.id == self._selected_robot_id), self.engine.robots[0])
+        eta = f"ETA {r.eta_seconds:.0f}s ({r.eta_status})" if r.mission == "en_route" else r.task
+        self.robot_info_label.setText(
+            f"选中装备 {r.id} ({r.name}) · 电量 {r.battery:.0f}% · 机身温度 {r.temp:.1f}℃ · "
+            f"速度 {r.speed:.1f} m/s · 高度 {r.altitude:.0f} m · {eta}"
+        )
         e = self.engine
         self.t_speed.set_text("速度 1.8 m/s" if not e.estop else "速度 0.0 m/s（急停）")
         self.t_head.set_text(f"航向 {(e.wind_deg + 174) % 360:03.0f}°")
