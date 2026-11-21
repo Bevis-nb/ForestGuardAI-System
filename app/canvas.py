@@ -557,8 +557,8 @@ class TerrainMap(QWidget):
                              highlight=robot.id == self.selected_robot)
 
     def _draw_badge(self, p: QPainter, pos: QPointF, icon_name: str, color: str,
-                    text: str, highlight: bool = False):
-        radius = 13 if not highlight else 15
+                    text: str, highlight: bool = False, small: bool = False):
+        radius = (7 if small else 13) if not highlight else (9 if small else 15)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 235))
         p.drawEllipse(pos, radius, radius)
