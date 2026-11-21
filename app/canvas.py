@@ -299,13 +299,9 @@ class TerrainMap(QWidget):
             self._paint_heat(p, r)
         self._paint_bases(p, r)
         self._paint_fire(p, r)
-        if self.show_costmap:
-            self._paint_costmap(p, r)
         if self.show_path:
             self._paint_path(p, r)
         self._paint_robots(p, r)
-        if self.show_lidar:
-            self._paint_lidar(p, r)
         p.restore()
         self._paint_compass(p, r)
         if self.show_legend:

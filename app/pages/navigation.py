@@ -62,12 +62,7 @@ class NavPage(ScrollPage):
         ctrl = QHBoxLayout()
         ctrl.setSpacing(9)
         ctrl.addWidget(label("图层", "muted"))
-        self.sw_lidar = ToggleSwitch(True)
-        ctrl.addWidget(self.sw_lidar)
-        ctrl.addWidget(label("激光点云", "caption"))
-        self.sw_cost = ToggleSwitch(True)
-        ctrl.addWidget(self.sw_cost)
-        ctrl.addWidget(label("代价地图", "caption"))
+        # 已移除激光点云与代价地图图层开关
         ctrl.addStretch(1)
         self.nav_state = label("● 自主导航中 · 动态避障已开启", None,
                                color=theme.ACCENT, size=11.5, weight=700)
