@@ -29,7 +29,7 @@ class AnalysisPage(ScrollPage):
         )
         self.add_action(Pill("多模态推理在线", "success"))
         self.add_action(button("导出研判报告", "soft", "download", height=34, on_click=self._export))
-        self.add_action(button("生成处置方案", "primary", "sparkles", height=34, on_click=self._make_plan))
+        # 处置方案随火点态势自动生成
 
         body = QHBoxLayout()
         body.setSpacing(14)
