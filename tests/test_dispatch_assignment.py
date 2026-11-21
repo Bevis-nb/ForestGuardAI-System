@@ -23,14 +23,14 @@ class DispatchAssignmentTests(unittest.TestCase):
         unit.battery = 30
         self.assertEqual(robot_health_risk(unit), 0.5)
         unit.battery, unit.temp = 80, 50
-        self.assertAlmostEqual(robot_health_risk(unit), 5 / 45)
+        self.assertAlmostEqual(robot_health_risk(unit), 5 / 15)
         unit.battery, unit.temp = 20, 30
         self.assertEqual(robot_health_risk(unit), 1)
         unit.battery, unit.temp = 80, ROBOT_OVERHEAT_TEMP
         self.assertLess(robot_health_risk(unit), 1)
-        unit.temp = 90
+        unit.temp = 60
         self.assertLess(robot_health_risk(unit), 1)
-        unit.temp = 91
+        unit.temp = 60.1
         self.assertGreater(robot_health_risk(unit), 1)
         unit.battery, unit.temp = 10, 50
         self.assertGreater(robot_health_risk(unit), 1)

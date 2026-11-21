@@ -307,6 +307,8 @@ class TerrainMap(QWidget):
         if self.show_path or (self._show_robots and self.mode == "analysis"):
             self._paint_path(p, r)
         self._paint_robots(p, r)
+        if self._show_robots:
+            self._paint_spray(p)
         p.restore()
         self._paint_compass(p, r)
         if self.show_legend:
@@ -479,6 +481,25 @@ class TerrainMap(QWidget):
                        3 if self.mode == "navigation" else 1.5, Qt.PenStyle.DashLine)
             p.setPen(pen)
             p.drawPath(path)
+            if self.mode == "navigation":
+                self._draw_route_finish(p, self.pt(points[-1]))
+
+    def _draw_route_finish(self, p: QPainter, end: QPointF):
+        """终点为旗杆底部，用矢量绘制棋盘旗避免依赖 emoji 字体。"""
+        p.save()
+        p.setPen(QPen(QColor("#263C32"), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawLine(end, end + QPointF(0, -22))
+        flag = QRectF(end.x(), end.y() - 22, 16, 12)
+        p.setPen(QPen(QColor("#263C32"), 1))
+        p.setBrush(QColor("#FFFFFF"))
+        p.drawRect(flag)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#263C32"))
+        for row in range(2):
+            for col in range(4):
+                if (row + col) % 2 == 0:
+                    p.drawRect(QRectF(flag.x() + col * 4, flag.y() + row * 6, 4, 6))
+        p.restore()
 
     def _paint_lidar(self, p: QPainter, r: QRectF):
         robot = next((x for x in self.engine.robots if x.id == "UGV-01"), self.engine.robots[0])
@@ -512,7 +533,7 @@ class TerrainMap(QWidget):
             return
         for robot in self.engine.robots:
             pos = self.pt((robot.x, robot.y))
-            if robot.battery <= 20 or robot.temp > 90 or robot.status == "offline":
+            if robot.battery <= 20 or robot.temp > 60 or robot.status == "offline":
                 color = theme.RED          # 危险中
             elif robot.mission in ("en_route", "spraying", "recon"):
                 color = "#F59E0B"          # 被调度中
@@ -520,20 +541,6 @@ class TerrainMap(QWidget):
                 color = theme.ACCENT       # 巡逻中
             else:
                 color = theme.BLUE         # 待命 / 充电中
-
-            # 灭火喷洒水柱 / 粒子动画
-            spray_fire = self.engine.spray_target(robot)
-            if spray_fire is not None:
-                fire_pt = self.pt(spray_fire.origin)
-                p.setPen(QPen(QColor(24, 174, 196, 160), 2.2))
-                p.drawLine(pos, fire_pt)
-                p.setPen(Qt.PenStyle.NoPen)
-                for k in range(4):
-                    t = (self.phase * 1.4 + k * 0.25) % 1.0
-                    sx = pos.x() + (fire_pt.x() - pos.x()) * t
-                    sy = pos.y() + (fire_pt.y() - pos.y()) * t
-                    p.setBrush(QColor(56, 189, 248, int(220 * (1 - t * 0.5))))
-                    p.drawEllipse(QPointF(sx, sy), 3.2, 3.2)
 
             is_docked = robot.mission == "idle" and robot.status in ("standby", "charging")
             if is_docked:
@@ -550,6 +557,25 @@ class TerrainMap(QWidget):
                              color, "",
                              highlight=robot.id == self.selected_robot,
                              small=is_docked)
+
+    def _paint_spray(self, p: QPainter):
+        """绘制实际有效的喷洒，单独置于设备和火点图标之上。"""
+        for robot in self.engine.robots:
+            fire = self.engine.spray_target(robot)
+            if fire is None:
+                continue
+            start = self.pt((robot.x, robot.y))
+            end = self.pt(fire.origin)
+            p.setPen(QPen(QColor(255, 255, 255, 210), 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(start, end)
+            p.setPen(QPen(QColor(0, 155, 215, 235), 2.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(start, end)
+            p.setPen(Qt.PenStyle.NoPen)
+            for k in range(4):
+                t = (self.phase * 1.4 + k * 0.25) % 1.0
+                pt = start + (end - start) * t
+                p.setBrush(QColor(56, 189, 248, int(220 * (1 - t * 0.5))))
+                p.drawEllipse(pt, 2.8, 2.8)
 
     def _draw_badge(self, p: QPainter, pos: QPointF, icon_name: str, color: str,
                     text: str, highlight: bool = False, small: bool = False):

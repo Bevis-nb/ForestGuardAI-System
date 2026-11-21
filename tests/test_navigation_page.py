@@ -37,6 +37,42 @@ class NavigationPageTests(unittest.TestCase):
         overview.close()
         overview.deleteLater()
 
+    def test_overview_shows_only_valid_spray_without_routes(self):
+        fire = self.engine.ignite_random_fire((.5, .5))
+        robot = self.engine.active_fire_robots(fire.id)[0]
+        robot.x, robot.y = fire.origin
+        robot.mission, robot.spraying = "spraying", True
+        overview = TerrainMap(self.engine, "overview")
+        overview.resize(600, 400)
+        overview.show()
+        self.app.processEvents()
+        with patch.object(overview, "_paint_path") as path, \
+             patch.object(overview, "_paint_spray", wraps=overview._paint_spray) as spray, \
+             patch.object(self.engine, "spray_target", wraps=self.engine.spray_target) as target:
+            overview.grab()
+            path.assert_not_called()
+            spray.assert_called()
+            self.assertTrue(any(call.args[0] is robot for call in target.call_args_list))
+        self.assertIs(self.engine.spray_target(robot), fire)
+        robot.x, robot.y = .1, .1
+        self.assertIsNone(self.engine.spray_target(robot))
+        overview.close()
+        overview.deleteLater()
+
+    def test_selected_route_displays_finish_flag(self):
+        fire = self.engine.ignite_random_fire((.5, .5))
+        robot = self.engine.active_fire_robots(fire.id)[0]
+        self.page._on_robot_selected(robot.id)
+        expected = self.page.map.pt(self.engine.remaining_route(robot)[-1])
+        with patch.object(self.page.map, "_draw_route_finish", wraps=self.page.map._draw_route_finish) as flag:
+            self.page.map.grab()
+            flag.assert_called_once()
+            self.assertEqual(flag.call_args.args[1], expected)
+        robot.mission = "idle"
+        with patch.object(self.page.map, "_draw_route_finish") as flag:
+            self.page.map.grab()
+            flag.assert_not_called()
+
     def test_independent_selection_and_shared_maps(self):
         a, b = self.engine.robots[:2]
         fire = self.engine.ignite_random_fire((.5, .5))

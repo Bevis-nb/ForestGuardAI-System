@@ -405,9 +405,9 @@ class Robot:
 
 
 def robot_health_risk(robot: Robot) -> float:
-    """显示排序：电量低于40%或温度高于45℃预警；20%及以下或超过90℃严重。"""
-    temp_risk = (robot.temp - 45.0) / 45.0
-    if robot.temp <= 90.0:
+    """显示排序：电量低于40%或温度高于45℃预警；20%及以下或超过60℃严重。"""
+    temp_risk = (robot.temp - 45.0) / (ROBOT_OVERHEAT_TEMP - 45.0)
+    if robot.temp <= ROBOT_OVERHEAT_TEMP:
         temp_risk = min(temp_risk, 0.999)
     return max(0.0, (40.0 - robot.battery) / 20.0, temp_risk)
 

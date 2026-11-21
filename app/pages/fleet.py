@@ -84,7 +84,7 @@ class RobotCard(QFrame):
         self.signal_label = label(f"信号 {robot.signal:.0f}%", "caption")
         foot.addWidget(self.signal_label)
         self.temp_label = label(f"{robot.temp:.1f}℃", "caption",
-                                color=theme.RED if robot.temp > 90 else theme.AMBER if robot.temp > 45 else theme.MUTED)
+                                color=theme.RED if robot.temp > 60 else theme.AMBER if robot.temp > 45 else theme.MUTED)
         foot.addWidget(self.temp_label)
         lay.addLayout(foot)
 
@@ -123,7 +123,7 @@ class RobotCard(QFrame):
         self.signal_label.setText(f"信号 {r.signal:.0f}%")
         self.temp_label.setText(f"{r.temp:.1f}℃")
         self.temp_label.setStyleSheet(
-            f"color:{theme.RED if r.temp > 90 else theme.AMBER if r.temp > 45 else theme.MUTED}; font-size:11px;"
+            f"color:{theme.RED if r.temp > 60 else theme.AMBER if r.temp > 45 else theme.MUTED}; font-size:11px;"
         )
 
     def mousePressEvent(self, event):
