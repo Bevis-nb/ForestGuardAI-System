@@ -575,8 +575,9 @@ class TerrainMap(QWidget):
         p.drawEllipse(pos, radius, radius)
         p.setBrush(QColor(color))
         p.drawEllipse(pos, radius - 1.5, radius - 1.5)
-        pm = icons.pixmap(icon_name, "#FFFFFF", 14)
-        p.drawPixmap(QPointF(pos.x() - 7, pos.y() - 7), pm)
+        if not small:
+            pm = icons.pixmap(icon_name, "#FFFFFF", 14)
+            p.drawPixmap(QPointF(pos.x() - 7, pos.y() - 7), pm)
         if highlight:
             p.setPen(QPen(QColor(color), 2, Qt.PenStyle.DashLine))
             p.setBrush(Qt.BrushStyle.NoBrush)
